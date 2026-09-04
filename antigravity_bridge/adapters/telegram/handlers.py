@@ -1,6 +1,7 @@
 """Telegram command and message handlers for Antigravity Agent bridge."""
 
 import asyncio
+import html
 import logging
 import os
 import re
@@ -281,7 +282,7 @@ class TelegramHandlers:
             await status_msg.edit_text(f"❌ 获取会话列表失败：`{exc}`", parse_mode=ParseMode.MARKDOWN)
 
     # ------------------------------------------------------------------
-    # Command: /history [limit]
+    # Command: /history [limit or session_id] [limit]
     # ------------------------------------------------------------------
     async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._check_auth(update):
@@ -291,46 +292,112 @@ class TelegramHandlers:
         session = self.session_mgr.get_session(chat_id)
         conv_id = session.active_conversation_id
 
-        if not conv_id:
+        limit = 3
+        target_conv_id = conv_id
+
+        # Flexible argument handling: /history 5, /history #1, /history 1, /history #1 5, /history <UUID>
+        if context.args:
+            first_arg = context.args[0].strip()
+            second_arg = context.args[1].strip() if len(context.args) > 1 else None
+
+            # Case 1: Single numeric argument (e.g. /history 5)
+            if first_arg.isdigit() and not second_arg:
+                val = int(first_arg)
+                if target_conv_id:
+                    limit = min(max(val, 1), 20)
+                else:
+                    # If no active session, try resolving as session index
+                    convs = await self.agent_cli.list_conversations(limit=30)
+                    if 1 <= val <= len(convs):
+                        target_conv_id = convs[val - 1].conversation_id
+                    limit = 3
+            # Case 2: Session index/prefix specified (e.g. /history #1, /history 1 5, /history <prefix>)
+            else:
+                convs = await self.agent_cli.list_conversations(limit=50)
+                clean_num = first_arg.lstrip("#")
+                if clean_num.isdigit():
+                    idx = int(clean_num)
+                    if 1 <= idx <= len(convs):
+                        target_conv_id = convs[idx - 1].conversation_id
+                else:
+                    matches = [c for c in convs if c.conversation_id.lower().startswith(first_arg.lower())]
+                    if len(matches) == 1:
+                        target_conv_id = matches[0].conversation_id
+                    else:
+                        target_conv_id = first_arg
+
+                if second_arg and second_arg.isdigit():
+                    limit = min(max(int(second_arg), 1), 20)
+
+        if not target_conv_id:
             await update.effective_message.reply_text(
                 "❌ 当前未绑定任何活动会话。\n"
                 "• 发送 `/sessions` 可查看并绑定历史会话\n"
-                "• 或直接发送任意文本即可开启全新会话",
+                "• 发送 `/history <序号>`（如 `/history 1`）可直接查看指定会话历史\n"
+                "• 或直接发送任意文本开启全新会话",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
 
-        limit = 3
-        if context.args and context.args[0].isdigit():
-            limit = min(max(int(context.args[0]), 1), 10)
-
-        status_msg = await update.effective_message.reply_text("🔍 正在读取当前会话历史记录...")
+        status_msg = await update.effective_message.reply_text(
+            f"🔍 正在读取会话 <code>{html.escape(target_conv_id[:8])}...</code> 历史记录...",
+            parse_mode=ParseMode.HTML,
+        )
 
         try:
-            history = await self.agent_cli.get_conversation_history(conv_id, limit=limit)
+            history = await self.agent_cli.get_conversation_history(target_conv_id, limit=limit)
             if not history:
                 await status_msg.edit_text(
-                    f"ℹ️ 会话 `{conv_id}` 暂无交互记录（或尚未生成有效回复）。",
-                    parse_mode=ParseMode.MARKDOWN,
+                    f"ℹ️ 会话 <code>{html.escape(target_conv_id)}</code> 暂无交互记录（或尚未生成有效回复）。",
+                    parse_mode=ParseMode.HTML,
                 )
                 return
 
-            lines = [f"📜 *会话历史交互记录* (`{conv_id[:8]}...`，最近 {len(history)} 轮)：\n"]
+            lines = [
+                f"📜 <b>会话历史交互记录</b> (<code>{html.escape(target_conv_id[:8])}...</code>，最近 {len(history)} 轮)：\n"
+            ]
+
             for i, (user_req, agent_resp) in enumerate(history, 1):
-                clean_user = user_req.strip().replace("\n", " ")
-                if len(clean_user) > 120:
-                    clean_user = clean_user[:120] + "..."
-                clean_resp = agent_resp.strip().replace("\n", " ")
-                if len(clean_resp) > 200:
-                    clean_resp = clean_resp[:200] + "..."
+                clean_user = re.sub(r"\s+", " ", user_req).strip()
+                orig_user_len = len(clean_user)
+                is_u_trunc = orig_user_len > 120
+                if is_u_trunc:
+                    clean_user = clean_user[:120].rstrip() + "..."
 
-                lines.append(f"*#{i}* 👤 *用户*：\n{clean_user}\n🤖 *Agent*：\n{clean_resp}\n")
+                clean_resp = re.sub(r"\s+", " ", agent_resp).strip()
+                orig_resp_len = len(clean_resp)
+                is_r_trunc = orig_resp_len > 250
+                if is_r_trunc:
+                    clean_resp = clean_resp[:250].rstrip() + "..."
 
-            lines.append("💡 发送 `/history <条数>`（如 `/history 5`）可查看更多历史轮次。")
-            await status_msg.edit_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+                u_trunc_tag = f" <i>(共 {orig_user_len} 字，已截断)</i>" if is_u_trunc else ""
+                r_trunc_tag = f" <i>(共 {orig_resp_len} 字，已截断)</i>" if is_r_trunc else ""
+
+                lines.append(
+                    f"<b>#{i} 👤 用户</b>{u_trunc_tag}：\n"
+                    f"{html.escape(clean_user)}\n\n"
+                    f"<b>🤖 Agent</b>{r_trunc_tag}：\n"
+                    f"{html.escape(clean_resp)}\n"
+                    f"────────────────────"
+                )
+
+            lines.append("💡 <i>提示：长对话内容已自动截断以保证清晰展示。发送 /history &lt;条数&gt;（如 /history 5）可查看更多轮次。</i>")
+            msg_text = "\n".join(lines)
+
+            # Cap message text to fit within Telegram limits
+            if len(msg_text) > 3800:
+                msg_text = msg_text[:3800] + "\n\n<i>...(历史轮次内容过长，已自动截断输出)...</i>"
+
+            try:
+                await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML)
+            except Exception:
+                # Fallback to plain text if HTML parsing fails
+                plain_text = re.sub(r"<[^>]+>", "", msg_text)
+                await status_msg.edit_text(plain_text, parse_mode=None)
+
         except Exception as exc:
             logger.exception("Failed to fetch conversation history")
-            await status_msg.edit_text(f"❌ 读取会话历史记录失败：`{exc}`", parse_mode=ParseMode.MARKDOWN)
+            await status_msg.edit_text(f"❌ 读取会话历史记录失败：{exc}", parse_mode=None)
 
     # ------------------------------------------------------------------
     # Command: /status

@@ -411,6 +411,7 @@ class AgentCliBridge:
 
         history: List[Tuple[str, str]] = []
         current_user: Optional[str] = None
+        last_agent_resp: str = ""
 
         try:
             with open(transcript_file, "r", encoding="utf-8", errors="replace") as f:
@@ -423,14 +424,19 @@ class AgentCliBridge:
                         t = data.get("type")
                         c = data.get("content", "")
                         if t == "USER_INPUT":
+                            if current_user is not None and last_agent_resp:
+                                history.append((current_user, last_agent_resp))
                             clean = re.sub(r"<USER_REQUEST>|\n?</USER_REQUEST>", "", c).strip()
                             clean = re.sub(r"<ADDITIONAL_METADATA>[\s\S]*?</ADDITIONAL_METADATA>", "", clean).strip()
                             current_user = clean
-                        elif t == "PLANNER_RESPONSE" and c and current_user is not None:
-                            history.append((current_user, c))
-                            current_user = None
+                            last_agent_resp = ""
+                        elif t == "PLANNER_RESPONSE" and c:
+                            last_agent_resp = c
                     except json.JSONDecodeError:
                         continue
+
+            if current_user is not None and last_agent_resp:
+                history.append((current_user, last_agent_resp))
         except OSError as exc:
             logger.warning(f"Error reading transcript for {conversation_id}: {exc}")
             return []
