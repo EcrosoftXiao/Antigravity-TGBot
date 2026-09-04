@@ -179,28 +179,70 @@ class TelegramHandlers:
             curr = session.active_conversation_id
             if curr:
                 await update.effective_message.reply_text(
-                    f"当前绑定的会话：`{curr}`\n使用 `/session <会话ID>` 切换其他会话。",
+                    f"当前绑定的会话：`{curr}`\n使用 `/session <序号或会话ID>` 切换其他会话，或使用 `/sessions` 查看列表。",
                     parse_mode=ParseMode.MARKDOWN,
                 )
             else:
                 await update.effective_message.reply_text(
-                    "当前未绑定任何会话。请使用 `/new` 创建新会话或 `/session <会话ID>` 进行绑定。",
+                    "当前未绑定任何会话。请使用 `/new` 创建新会话或 `/session <序号或会话ID>` 进行绑定。",
                     parse_mode=ParseMode.MARKDOWN,
                 )
             return
 
-        target_id = context.args[0].strip()
+        target_arg = context.args[0].strip()
+        convs = await self.agent_cli.list_conversations(limit=50)
+
+        clean_num = target_arg.lstrip("#")
+        target_id = None
+        target_title = ""
+
+        # 1. Check if argument is a numeric index (e.g. "1", "#1")
+        if clean_num.isdigit():
+            idx = int(clean_num)
+            if 1 <= idx <= len(convs):
+                chosen = convs[idx - 1]
+                target_id = chosen.conversation_id
+                target_title = chosen.title
+            else:
+                await update.effective_message.reply_text(
+                    f"⚠️ 序号 `#{clean_num}` 超出范围：当前本地记录共有 {len(convs)} 个会话（请输入 1 ~ {len(convs)}）。\n"
+                    f"请先发送 `/sessions` 查看列表。",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+        else:
+            # 2. Check if argument matches full ID or unique prefix
+            prefix = target_arg.lower()
+            matches = [c for c in convs if c.conversation_id.lower().startswith(prefix)]
+            if len(matches) == 1:
+                target_id = matches[0].conversation_id
+                target_title = matches[0].title
+            elif len(matches) > 1:
+                matched_lines = "\n".join([f"• `{c.conversation_id[:8]}` ({c.title})" for c in matches[:5]])
+                await update.effective_message.reply_text(
+                    f"⚠️ 匹配到多个以 `{target_arg}` 开头的会话：\n{matched_lines}\n请提供更多字符以精确定位。",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+            else:
+                target_id = target_arg
+
         try:
-            # Validate conversation exists
-            await self.agent_cli.get_metadata(target_id)
+            # Validate conversation existence: check local directory or agentapi
+            brain_dir = self.agent_cli.gemini_dir / "brain" / target_id
+            if not brain_dir.is_dir():
+                # Attempt metadata check through agentapi
+                await self.agent_cli.get_metadata(target_id)
+
             self.session_mgr.bind_conversation(chat_id, target_id)
+            title_desc = f"\n💬 _{target_title}_" if target_title else ""
             await update.effective_message.reply_text(
-                f"🔗 已成功绑定到会话：`{target_id}`",
+                f"🔗 *已成功绑定到会话：*\n`{target_id}`{title_desc}",
                 parse_mode=ParseMode.MARKDOWN,
             )
         except Exception as exc:
             await update.effective_message.reply_text(
-                f"❌ 绑定会话 `{target_id}` 失败：{exc}",
+                f"❌ 绑定会话 `{target_id}` 失败：未找到该会话记录或会话已失效。\n`{exc}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -231,7 +273,7 @@ class TelegramHandlers:
                     f"   🕒 _{time_str}_ | 💬 {c.title}\n"
                 )
 
-            lines.append("发送 `/session <会话ID>` 即可快速绑定。")
+            lines.append("💡 发送 `/session <序号>`（如 `/session 1`）或 `/session <会话ID>` 即可快速绑定。")
             msg_text = "\n".join(lines)
             await status_msg.edit_text(msg_text, parse_mode=ParseMode.MARKDOWN)
         except Exception as exc:
