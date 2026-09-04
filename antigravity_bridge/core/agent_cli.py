@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import subprocess
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -329,6 +330,55 @@ class AgentCliBridge:
         data = await self._exec_agentapi(args)
         logger.info(f"Dispatched message to conversation {conversation_id}")
         return "response" in data
+
+    async def cancel_cascade(self, conversation_id: str) -> bool:
+        """Send CancelCascadeInvocation RPC to Antigravity Language Server to halt an active task."""
+        try:
+            env = self._get_clean_env()
+            ls_addr = env.get("ANTIGRAVITY_LS_ADDRESS")
+            csrf_token = env.get("ANTIGRAVITY_CSRF_TOKEN")
+            if not ls_addr:
+                logger.warning("Cannot cancel cascade: ANTIGRAVITY_LS_ADDRESS not detected.")
+                return False
+
+            if not ls_addr.startswith("http://") and not ls_addr.startswith("https://"):
+                url = f"http://{ls_addr}/exa.language_server_pb.LanguageServerService/CancelCascadeInvocation"
+            else:
+                url = f"{ls_addr}/exa.language_server_pb.LanguageServerService/CancelCascadeInvocation"
+
+            headers = {
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+            }
+            if csrf_token:
+                headers["x-codeium-csrf-token"] = csrf_token
+
+            payload = json.dumps({
+                "cascade_id": conversation_id,
+                "kill_background_tasks": True,
+            }).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+
+            loop = asyncio.get_running_loop()
+
+            def _send_cancel() -> bool:
+                try:
+                    with urllib.request.urlopen(req, timeout=3) as resp:
+                        return resp.status in (200, 204)
+                except urllib.error.HTTPError as he:
+                    body = he.read().decode("utf-8", errors="ignore")
+                    logger.info(f"CancelCascadeInvocation returned HTTP {he.code}: {body}")
+                    return he.code in (200, 204)
+                except Exception as exc:
+                    logger.warning(f"Failed calling CancelCascadeInvocation: {exc}")
+                    return False
+
+            success = await loop.run_in_executor(None, _send_cancel)
+            logger.info(f"Dispatched CancelCascadeInvocation for conversation {conversation_id} (result={success})")
+            return success
+        except Exception as exc:
+            logger.exception(f"Exception cancelling cascade for {conversation_id}: {exc}")
+            return False
 
     async def get_metadata(self, conversation_id: str) -> Dict[str, Any]:
         """Fetch metadata for a conversation."""

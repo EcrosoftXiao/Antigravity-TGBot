@@ -49,6 +49,8 @@ class TelegramHandlers:
         self.default_model = default_model
         self.default_workspace = default_workspace or os.getcwd()
         self.pending_questions: Dict[int, Dict[str, Any]] = {}
+        self.active_tasks: Dict[int, asyncio.Task] = {}
+        self.active_editors: Dict[int, ThrottledEditor] = {}
 
     def is_authorized(self, update: Update) -> bool:
         """Verify if the sender is authorized to control the machine."""
@@ -592,11 +594,48 @@ class TelegramHandlers:
             return
 
         chat_id = update.effective_chat.id
+        session = self.session_mgr.get_session(chat_id)
+        conv_id = session.active_conversation_id
+
+        # 1. Pop any pending question state
         self.pending_questions.pop(chat_id, None)
-        await update.effective_message.reply_text(
-            "🛑 已请求停止任务，已向本地 Antigravity Agent 发送中断信号。",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+
+        # 2. Get active background stream task and editor
+        running_task = self.active_tasks.pop(chat_id, None)
+        active_editor = self.active_editors.pop(chat_id, None)
+
+        # 3. Call Antigravity Language Server CancelCascadeInvocation RPC
+        rpc_cancelled = False
+        if conv_id:
+            rpc_cancelled = await self.agent_cli.cancel_cascade(conv_id)
+
+        # 4. Cancel the bot's background stream task
+        if running_task and not running_task.done():
+            running_task.cancel()
+
+        # 5. Update status editor if it was running
+        if active_editor:
+            try:
+                await active_editor.edit(
+                    "🛑 <b>任务已手动中断停止。</b>",
+                    force=True,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+
+        # 6. Inform user
+        if running_task or rpc_cancelled:
+            await update.effective_message.reply_text(
+                "🛑 *已成功停止会话任务*：已向本地 Antigravity Agent 发送中断信号，并终止了当前回复流。",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        else:
+            await update.effective_message.reply_text(
+                "ℹ️ 当前没有正在执行的 Agent 任务，会话处于空闲状态。",
+                parse_mode=ParseMode.MARKDOWN,
+            )
 
     # ------------------------------------------------------------------
     # Question Interactive Selection Helpers & Callback Query Handler
@@ -889,6 +928,11 @@ class TelegramHandlers:
         )
         editor = ThrottledEditor(status_msg, min_interval=1.2)
 
+        current_task = asyncio.current_task()
+        if current_task:
+            self.active_tasks[chat_id] = current_task
+        self.active_editors[chat_id] = editor
+
         try:
             # Auto-create conversation if none exists
             if not conv_id:
@@ -994,8 +1038,17 @@ class TelegramHandlers:
             else:
                 await editor.edit("✅ 任务已执行完成（无文本输出内容）。", force=True)
 
+        except asyncio.CancelledError:
+            logger.info(f"Task for chat {chat_id} was cancelled by /stop")
+            try:
+                await editor.edit("🛑 <b>任务已被用户手动停止。</b>", force=True, parse_mode=ParseMode.HTML, reply_markup=None)
+            except Exception:
+                pass
+            raise
         except Exception as exc:
             logger.exception("Error executing prompt on Antigravity Agent")
             await editor.edit(f"❌ *执行失败：* `{exc}`", force=True)
         finally:
             self.pending_questions.pop(chat_id, None)
+            self.active_tasks.pop(chat_id, None)
+            self.active_editors.pop(chat_id, None)
