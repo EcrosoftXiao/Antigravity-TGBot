@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Secrets & Local Config
+.env
+.env.local
+
+# Runtime Data
+data/
+*.log
+bot.pid
+.sessions.json
+
+# IDE & OS
+.DS_Store
+.idea/
+.vscode/
