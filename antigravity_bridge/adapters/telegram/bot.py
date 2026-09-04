@@ -6,6 +6,7 @@ from telegram import BotCommand
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CallbackQueryHandler,
     CommandHandler,
     MessageHandler,
     filters,
@@ -69,6 +70,9 @@ class TelegramBotAdapter(BaseBotAdapter):
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.handle_message)
         )
+
+        # Callback query handler for inline buttons
+        app.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query))
 
         return app
 

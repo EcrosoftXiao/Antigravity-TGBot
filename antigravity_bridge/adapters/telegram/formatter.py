@@ -65,22 +65,30 @@ class ThrottledEditor:
         self.min_interval = min_interval
         self.last_edit_time = 0.0
         self.last_text = ""
+        self._last_markup: Optional[Any] = None
         self._lock = asyncio.Lock()
 
-    async def edit(self, text: str, force: bool = False, parse_mode: Optional[str] = "Markdown") -> bool:
+    async def edit(
+        self,
+        text: str,
+        force: bool = False,
+        parse_mode: Optional[str] = "Markdown",
+        reply_markup: Optional[Any] = None,
+    ) -> bool:
         """Edit the target message with throttling. Returns True if edit succeeded."""
         async with self._lock:
             now = time.time()
+            if text == self.last_text and reply_markup == self._last_markup:
+                return False
+
             if not force and (now - self.last_edit_time < self.min_interval):
                 return False
 
-            if text == self.last_text:
-                return False
-
             try:
-                await self.message.edit_text(text, parse_mode=parse_mode)
+                await self.message.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
                 self.last_edit_time = now
                 self.last_text = text
+                self._last_markup = reply_markup
                 return True
             except BadRequest as exc:
                 err_msg = str(exc)
@@ -93,9 +101,10 @@ class ThrottledEditor:
                         logger.warning(
                             f"Telegram rejected formatted text ({err_msg}). Falling back to plain text edit."
                         )
-                        await self.message.edit_text(text, parse_mode=None)
+                        await self.message.edit_text(text, parse_mode=None, reply_markup=reply_markup)
                         self.last_edit_time = now
                         self.last_text = text
+                        self._last_markup = reply_markup
                         return True
                     except Exception as fallback_exc:
                         logger.error(f"Fallback plain-text edit failed: {fallback_exc}")

@@ -25,7 +25,11 @@
    - 动态监听 `transcript.jsonl` 日志，实时在 Telegram 中推送思考状态（🧠 Thinking）、工具调用状态（⚙️ Tool Call）及执行结果。
    - 内置智能节流器（ThrottledEditor），严格遵守 Telegram 消息编辑频率限制，避免触发 429 限流。
    - 超过 4096 字符的长消息自动按 Markdown 代码块安全切片分段发送。
-5. **严密的安全访问控制：**
+5. **原生交互式选项确认与内联键盘 (Interactive Buttons)**：
+   - 当 Agent 调用 `ask_question` 遇到分支决策时，在 Telegram 端实时弹出原生内联按钮（Inline Keyboard）。
+   - 单选直接点击提交，多选支持勾选状态动态切换（⬜ / ✅）与批量提交，并提供跳过选项。
+   - 兼容在聊天框直接输入数字序号（如 `1` 或 `1, 2`）或自定义文本回复，实现全功能远程闭环。
+6. **严密的安全访问控制：**
    - 允许通过 `ALLOWED_USERS` 配置 Telegram 用户 ID 白名单，杜绝未授权人员远程操作你的计算机。
 
 ---

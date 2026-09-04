@@ -92,11 +92,11 @@ class TranscriptMonitor:
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
                 while True:
-                    if time.time() - start_time > timeout:
+                    if time.time() - last_activity_time > timeout:
                         logger.warning(f"Timeout waiting for response in {conversation_id}")
                         yield ErrorEvent(
                             step_index=last_seen_step,
-                            error_message="Response timed out after 300 seconds.",
+                            error_message="Response timed out after 300 seconds of inactivity.",
                         )
                         return
 

@@ -2,11 +2,12 @@
 
 import asyncio
 import html
+import json
 import logging
 import os
 import re
-from typing import List, Optional, Set
-from telegram import Update
+from typing import Any, Dict, List, Optional, Set
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import ContextTypes
 
@@ -47,6 +48,7 @@ class TelegramHandlers:
         self.allowed_users = allowed_users or set()
         self.default_model = default_model
         self.default_workspace = default_workspace or os.getcwd()
+        self.pending_questions: Dict[int, Dict[str, Any]] = {}
 
     def is_authorized(self, update: Update) -> bool:
         """Verify if the sender is authorized to control the machine."""
@@ -578,6 +580,7 @@ class TelegramHandlers:
             return
 
         chat_id = update.effective_chat.id
+        self.pending_questions.pop(chat_id, None)
         count = self.session_mgr.cancel_batch_mode(chat_id)
         await update.effective_message.reply_text(
             f"🚫 批量模式已取消，已清空并丢弃 {count} 条暂存消息。",
@@ -588,10 +591,258 @@ class TelegramHandlers:
         if not await self._check_auth(update):
             return
 
+        chat_id = update.effective_chat.id
+        self.pending_questions.pop(chat_id, None)
         await update.effective_message.reply_text(
             "🛑 已请求停止任务，已向本地 Antigravity Agent 发送中断信号。",
             parse_mode=ParseMode.MARKDOWN,
         )
+
+    # ------------------------------------------------------------------
+    # Question Interactive Selection Helpers & Callback Query Handler
+    # ------------------------------------------------------------------
+    def _render_question_content(self, pending: Dict[str, Any]) -> Tuple[str, InlineKeyboardMarkup]:
+        """Format the question prompt text and generate Telegram InlineKeyboardMarkup."""
+        questions = pending.get("questions", [])
+        selections = pending.get("selections", {})
+
+        is_all_single = all(not q.get("is_multi_select", False) for q in questions)
+        is_simple_single = (len(questions) == 1 and is_all_single)
+
+        lines = ["❓ <b>Agent 正在等待你的选项确认：</b>\n"]
+        keyboard: List[List[InlineKeyboardButton]] = []
+
+        for q_idx, q in enumerate(questions):
+            q_text = q.get("question", "")
+            is_multi = q.get("is_multi_select", False)
+            type_str = "多选" if is_multi else "单选"
+            prefix = (
+                f"📌 <b>{html.escape(q_text)}</b> <i>({type_str})</i>"
+                if len(questions) == 1
+                else f"📌 <b>Q{q_idx+1}: {html.escape(q_text)}</b> <i>({type_str})</i>"
+            )
+            lines.append(prefix)
+
+            opts = q.get("options", [])
+            chosen_set = selections.get(q_idx, set())
+
+            for o_idx, opt in enumerate(opts):
+                is_chosen = o_idx in chosen_set
+                if is_simple_single:
+                    icon = "🔘"
+                else:
+                    icon = "✅" if is_chosen else "⬜"
+
+                opt_num = o_idx + 1
+                opt_display = opt.strip()
+                lines.append(f"   {icon} <b>{opt_num}.</b> {html.escape(opt_display)}")
+
+                # Inline button label
+                btn_label = f"{opt_num}. {opt_display}"
+                if not is_simple_single:
+                    btn_label = f"{icon} {btn_label}"
+
+                max_btn_len = 38
+                if len(btn_label) > max_btn_len:
+                    btn_label = btn_label[: max_btn_len - 1] + "…"
+
+                if is_simple_single:
+                    cb_data = f"q_sel:{q_idx}:{o_idx}"
+                else:
+                    cb_data = f"q_tog:{q_idx}:{o_idx}"
+
+                keyboard.append([InlineKeyboardButton(btn_label, callback_data=cb_data)])
+
+            lines.append("")
+
+        if is_simple_single:
+            lines.append("💡 <i>点击下方按钮直接选择，或在聊天框发送序号（如 1）：</i>")
+            keyboard.append([InlineKeyboardButton("⏭️ 跳过 (Skip)", callback_data="q_skp")])
+        else:
+            lines.append("💡 <i>点击选项切换勾选后点击【提交】，或直接输入序号（如 1, 2）：</i>")
+            action_row = [
+                InlineKeyboardButton("📤 提交选择 (Submit)", callback_data="q_sub"),
+                InlineKeyboardButton("⏭️ 跳过 (Skip)", callback_data="q_skp"),
+            ]
+            keyboard.append(action_row)
+
+        return "\n".join(lines).strip(), InlineKeyboardMarkup(keyboard)
+
+    async def _submit_question_answer(
+        self,
+        chat_id: int,
+        answer_text: str,
+        summary_text: str,
+    ) -> None:
+        """Submit the selected answer to Antigravity and update the Telegram message."""
+        pending = self.pending_questions.pop(chat_id, None)
+        if not pending:
+            return
+
+        conv_id = pending["conv_id"]
+        editor: Optional[ThrottledEditor] = pending.get("editor")
+
+        if editor:
+            try:
+                await editor.edit(
+                    f"✅ <b>已提交选择：</b>\n<blockquote>{html.escape(summary_text)}</blockquote>\n\n<i>⏳ Agent 正在继续执行...</i>",
+                    force=True,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to update status after submitting question: {exc}")
+
+        try:
+            await self.agent_cli.send_message(
+                conversation_id=conv_id,
+                content=answer_text,
+            )
+        except Exception as exc:
+            logger.exception("Failed to send question answer to Antigravity")
+            if editor:
+                await editor.edit(f"❌ *发送选项失败：* `{exc}`", force=True)
+
+    async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle inline button clicks for question selections and toggles."""
+        query = update.callback_query
+        if not query:
+            return
+
+        await query.answer()
+
+        if not self.is_authorized(update):
+            return
+
+        chat_id = update.effective_chat.id
+        data = query.data or ""
+
+        pending = self.pending_questions.get(chat_id)
+        if not pending:
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            await query.answer("⚠️ 选项已失效或已处理完成", show_alert=True)
+            return
+
+        if data.startswith("q_sel:"):
+            # Single select immediate submit: q_sel:<q_idx>:<o_idx>
+            parts = data.split(":")
+            q_idx, o_idx = int(parts[1]), int(parts[2])
+            questions = pending.get("questions", [])
+            if q_idx < len(questions):
+                opts = questions[q_idx].get("options", [])
+                if o_idx < len(opts):
+                    opt_text = opts[o_idx]
+                    ans = f"A{q_idx+1}: {opt_text}"
+                    await self._submit_question_answer(chat_id, ans, opt_text)
+
+        elif data.startswith("q_tog:"):
+            # Toggle checkbox in multi-select: q_tog:<q_idx>:<o_idx>
+            parts = data.split(":")
+            q_idx, o_idx = int(parts[1]), int(parts[2])
+            questions = pending.get("questions", [])
+            if q_idx < len(questions):
+                is_multi = questions[q_idx].get("is_multi_select", False)
+                selections = pending.setdefault("selections", {})
+                chosen = selections.setdefault(q_idx, set())
+                if is_multi:
+                    if o_idx in chosen:
+                        chosen.remove(o_idx)
+                    else:
+                        chosen.add(o_idx)
+                else:
+                    if o_idx in chosen:
+                        chosen.clear()
+                    else:
+                        chosen.clear()
+                        chosen.add(o_idx)
+
+                text, markup = self._render_question_content(pending)
+                editor = pending.get("editor")
+                if editor:
+                    await editor.edit(text, force=True, parse_mode=ParseMode.HTML, reply_markup=markup)
+                else:
+                    try:
+                        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+                    except Exception:
+                        pass
+
+        elif data == "q_sub":
+            # Submit multi-select choices
+            questions = pending.get("questions", [])
+            selections = pending.get("selections", {})
+
+            if not any(selections.values()):
+                await query.answer("请先勾选至少一个选项，或点击【跳过】", show_alert=True)
+                return
+
+            ans_lines = []
+            summary_lines = []
+            for q_idx, q in enumerate(questions):
+                chosen = sorted(list(selections.get(q_idx, set())))
+                opts = q.get("options", [])
+                if chosen:
+                    chosen_texts = [opts[i] for i in chosen if i < len(opts)]
+                    ans_lines.append(f"A{q_idx+1}: {', '.join(chosen_texts)}")
+                    summary_lines.append(f"Q{q_idx+1}: {', '.join(chosen_texts)}")
+                else:
+                    ans_lines.append(f"A{q_idx+1}: (Skipped)")
+                    summary_lines.append(f"Q{q_idx+1}: (跳过)")
+
+            ans_text = "\n".join(ans_lines)
+            summary_text = "\n".join(summary_lines)
+            await self._submit_question_answer(chat_id, ans_text, summary_text)
+
+        elif data == "q_skp":
+            # Skip question
+            await self._submit_question_answer(chat_id, "Skipped", "⏭️ 已跳过当前选项")
+
+    async def _handle_pending_question_text(self, update: Update, text: str) -> bool:
+        """Handle chat text replies while a question is pending."""
+        chat_id = update.effective_chat.id
+        pending = self.pending_questions.get(chat_id)
+        if not pending:
+            return False
+
+        clean_text = text.strip()
+        lower_text = clean_text.lower()
+
+        # 1. Skip keywords
+        if lower_text in ("skip", "跳过", "pass", "none", "取消"):
+            await self._submit_question_answer(chat_id, "Skipped", "⏭️ 已跳过当前选项")
+            return True
+
+        questions = pending.get("questions", [])
+        if not questions:
+            return False
+
+        # 2. Check for numeric tokens (e.g. "1", "1, 2", "1 2 3", "1、2", "1 2 3 4")
+        tokens = [t for t in re.split(r"[\s,，、]+", clean_text) if t]
+        if tokens and all(t.isdigit() for t in tokens):
+            nums = [int(t) for t in tokens]
+            if len(questions) == 1:
+                opts = questions[0].get("options", [])
+                valid_nums = [n for n in nums if 1 <= n <= len(opts)]
+                if valid_nums:
+                    chosen_texts = [opts[n - 1] for n in valid_nums]
+                    ans = f"A1: {', '.join(chosen_texts)}"
+                    summary = ", ".join(chosen_texts)
+                    await self._submit_question_answer(chat_id, ans, summary)
+                    return True
+                else:
+                    await update.effective_message.reply_text(
+                        f"⚠️ 输入的序号超出范围（有效范围：1-{len(opts)}），请重新输入或点击选项按钮。",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return True
+
+        # 3. Free-form text response (write-in response)
+        ans = f"A1: {clean_text}"
+        summary = f"自定义输入：{clean_text}"
+        await self._submit_question_answer(chat_id, ans, summary)
+        return True
 
     # ------------------------------------------------------------------
     # Message Dispatcher & Real-time Progress Streaming
@@ -605,6 +856,13 @@ class TelegramHandlers:
             return
 
         chat_id = update.effective_chat.id
+
+        # Check if user is responding to a pending interactive question
+        if chat_id in self.pending_questions:
+            handled = await self._handle_pending_question_text(update, text)
+            if handled:
+                return
+
         session = self.session_mgr.get_session(chat_id)
 
         # Handle batch collection mode
@@ -657,22 +915,49 @@ class TelegramHandlers:
 
             async for event in self.monitor.stream_events(conv_id, start_step_index=start_step):
                 if isinstance(event, ThinkingEvent):
-                    clean_thought = re.sub(r"[*_`\[\]]", "", event.thought).strip().replace("\n", " ")[:80]
-                    current_status = f"🧠 *思考中：* _{clean_thought}..._"
-                    await editor.edit(current_status)
+                    clean_thought = html.escape(event.thought.strip().replace("\n", " ")[:80])
+                    current_status = f"🧠 <b>思考中：</b> <i>{clean_thought}...</i>"
+                    await editor.edit(current_status, parse_mode=ParseMode.HTML)
 
                 elif isinstance(event, ToolCallEvent):
                     tool_name = event.tool_name or "tool"
+                    if tool_name == "ask_question":
+                        questions_raw = event.arguments.get("questions", [])
+                        if isinstance(questions_raw, str):
+                            try:
+                                questions = json.loads(questions_raw)
+                            except Exception:
+                                questions = []
+                        elif isinstance(questions_raw, list):
+                            questions = questions_raw
+                        else:
+                            questions = []
+
+                        if questions:
+                            self.pending_questions[chat_id] = {
+                                "conv_id": conv_id,
+                                "questions": questions,
+                                "selections": {q_idx: set() for q_idx in range(len(questions))},
+                                "editor": editor,
+                                "status_msg_id": status_msg.message_id,
+                            }
+                            text, markup = self._render_question_content(self.pending_questions[chat_id])
+                            await editor.edit(text, force=True, parse_mode=ParseMode.HTML, reply_markup=markup)
+                            continue
+
                     action = event.tool_action or event.tool_summary or ""
-                    detail = f" ({action})" if action else ""
-                    current_status = f"⚙️ *正在执行工具：* `{tool_name}`{detail}..."
-                    await editor.edit(current_status)
+                    clean_tool = html.escape(tool_name)
+                    clean_detail = f" ({html.escape(action)})" if action else ""
+                    current_status = f"⚙️ <b>正在执行工具：</b> <code>{clean_tool}</code>{clean_detail}..."
+                    await editor.edit(current_status, parse_mode=ParseMode.HTML)
 
                 elif isinstance(event, ToolResultEvent):
+                    self.pending_questions.pop(chat_id, None)
                     current_status = "🔄 正在处理工具执行结果..."
-                    await editor.edit(current_status)
+                    await editor.edit(current_status, parse_mode=None, reply_markup=None)
 
                 elif isinstance(event, TurnCompleteEvent):
+                    self.pending_questions.pop(chat_id, None)
                     final_response = event.final_content
                     break
 
@@ -680,6 +965,7 @@ class TelegramHandlers:
                     final_response = event.content
 
                 elif isinstance(event, ErrorEvent):
+                    self.pending_questions.pop(chat_id, None)
                     await editor.edit(f"❌ *执行出错：* {event.error_message}", force=True)
                     return
 
@@ -711,3 +997,5 @@ class TelegramHandlers:
         except Exception as exc:
             logger.exception("Error executing prompt on Antigravity Agent")
             await editor.edit(f"❌ *执行失败：* `{exc}`", force=True)
+        finally:
+            self.pending_questions.pop(chat_id, None)
