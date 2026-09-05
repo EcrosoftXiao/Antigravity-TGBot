@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import time
 from typing import Any, Optional, Set
@@ -51,6 +52,8 @@ class TelegramBotAdapter(BaseBotAdapter):
         self.app: Optional[Application] = None
         self.running: bool = False
         self._sync_task: Optional[asyncio.Task] = None
+        # Record startup time in UTC ISO format for external turn time-based filtering
+        self._startup_time_iso: str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def build_application(self) -> Application:
         """Create and configure the Telegram application."""
@@ -181,9 +184,14 @@ class TelegramBotAdapter(BaseBotAdapter):
                     elif not pending_approval and current_approval:
                         await self.handlers.cleanup_pending_approvals(chat_id)
 
-                    # Initialize synced baseline step for this conversation if not set
+                    # Initialize synced baseline step for this conversation if not set.
+                    # With since_time (startup time) filtering in place, pre-compaction
+                    # history is excluded by timestamp, so get_current_max_step (tail)
+                    # gives the correct initial step boundary.
                     if conv_id not in self.handlers.synced_max_steps:
                         self.handlers.synced_max_steps[conv_id] = self.monitor.get_current_max_step(conv_id)
+
+
 
                     # Check if an active turn is currently streaming for this chat_id
                     is_active = bool(
@@ -197,26 +205,37 @@ class TelegramBotAdapter(BaseBotAdapter):
                             self.monitor.get_current_max_step(conv_id),
                         )
                     else:
-                        # Detect any external turns from IDE client
-                        last_synced = self.handlers.synced_max_steps.get(conv_id, -1)
-                        new_turns = self.monitor.get_new_user_turns(conv_id, after_step_index=last_synced)
+                        # Detect any external turns from IDE client.
+                        # Use since_time (bot startup) as the primary filter so that
+                        # post-compaction steps with lower step_indexes than the
+                        # historical global max are still correctly detected.
+                        new_turns = self.monitor.get_new_user_turns(
+                            conv_id,
+                            after_step_index=self.handlers.synced_max_steps.get(conv_id, -1),
+                            since_time=self._startup_time_iso,
+                        )
                         if new_turns:
                             user_step_idx, user_prompt = new_turns[-1]
-                            self.handlers.synced_max_steps[conv_id] = max(
-                                self.handlers.synced_max_steps.get(conv_id, -1),
-                                self.monitor.get_current_max_step(conv_id),
-                            )
-                            logger.info(
-                                f"Detected external IDE turn in conversation {conv_id[:8]} (step {user_step_idx}): '{user_prompt[:40]}'. Forwarding to Telegram..."
-                            )
-                            asyncio.create_task(
-                                self.handlers.handle_external_client_turn(
-                                    chat_id=chat_id,
-                                    conv_id=conv_id,
-                                    user_step_index=user_step_idx,
-                                    prompt_text=user_prompt,
+                            turn_key = (conv_id, user_step_idx)
+                            if turn_key not in self.handlers.handled_external_steps:
+                                self.handlers.handled_external_steps.add(turn_key)
+                                self.handlers.synced_max_steps[conv_id] = max(
+                                    self.handlers.synced_max_steps.get(conv_id, -1),
+                                    user_step_idx,
+                                    self.monitor.get_current_max_step(conv_id),
                                 )
-                            )
+                                logger.info(
+                                    f"Detected external IDE turn in conversation {conv_id[:8]} (step {user_step_idx}): '{user_prompt[:40]}'. Forwarding to Telegram..."
+                                )
+                                asyncio.create_task(
+                                    self.handlers.handle_external_client_turn(
+                                        chat_id=chat_id,
+                                        conv_id=conv_id,
+                                        user_step_index=user_step_idx,
+                                        prompt_text=user_prompt,
+                                    )
+                                )
+
 
             except asyncio.CancelledError:
                 break

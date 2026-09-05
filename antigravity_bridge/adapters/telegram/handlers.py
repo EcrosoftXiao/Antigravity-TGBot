@@ -57,6 +57,7 @@ class TelegramHandlers:
         self.pending_questions: Dict[int, Dict[str, Any]] = {}
         self.pending_approvals: Dict[int, Dict[str, Any]] = {}
         self.handled_approvals: Set[str] = set()
+        self.handled_external_steps: Set[Tuple[str, int]] = set()
         self.last_approved_time: Dict[int, float] = {}
         self.synced_max_steps: Dict[str, int] = {}
         self.submitting_questions: Set[int] = set()
@@ -2631,10 +2632,16 @@ class TelegramHandlers:
                 )
 
             if conv_id:
-                self.synced_max_steps[conv_id] = self.monitor.get_current_max_step(conv_id)
+                self.synced_max_steps[conv_id] = max(
+                    self.synced_max_steps.get(conv_id, -1),
+                    self.monitor.get_current_max_step(conv_id),
+                )
             await self._stream_turn_events(chat_id, conv_id, editor, start_step, update.effective_message)
             if conv_id:
-                self.synced_max_steps[conv_id] = self.monitor.get_current_max_step(conv_id)
+                self.synced_max_steps[conv_id] = max(
+                    self.synced_max_steps.get(conv_id, -1),
+                    self.monitor.get_current_max_step(conv_id),
+                )
         except asyncio.CancelledError:
             raise
         except Exception as exc:

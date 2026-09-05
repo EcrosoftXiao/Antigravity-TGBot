@@ -42,7 +42,49 @@ class TranscriptMonitor:
         )
 
     def get_current_max_step(self, conversation_id: str) -> int:
-        """Get the highest step_index currently in transcript.jsonl."""
+        """Get the step_index of the last step in transcript.jsonl.
+
+        Reads from the tail of the file (last ~128KB) for efficiency. After a context
+        compaction the transcript is rewritten starting from a lower step_index, so the
+        true "current" baseline step is the one at the END of the file, not the
+        historical all-time maximum found anywhere in the file. Using the historical
+        max would cause start_step to be set too high, filtering out all new steps.
+        """
+        path = self.get_transcript_path(conversation_id)
+        if not path.is_file():
+            return -1
+
+        chunk_size = 131072  # 128 KB — enough to contain the last dozen steps
+        try:
+            file_size = path.stat().st_size
+            with open(path, "rb") as f:
+                read_size = min(file_size, chunk_size)
+                f.seek(file_size - read_size)
+                raw = f.read().decode("utf-8", errors="replace")
+            lines = raw.splitlines()
+            for line in reversed(lines):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                    idx = data.get("step_index", -1)
+                    if idx != -1:
+                        return idx
+                except json.JSONDecodeError:
+                    continue
+        except OSError:
+            pass
+        return -1
+
+    def get_global_max_step(self, conversation_id: str) -> int:
+        """Get the all-time highest step_index ever seen in transcript.jsonl.
+
+        Unlike get_current_max_step() which reads the tail, this scans the entire file
+        to find the historical maximum. Use this ONLY for initializing synced_max_steps
+        on bot startup, so that pre-compaction steps with high step_indexes are not
+        mistakenly treated as new external turns.
+        """
         path = self.get_transcript_path(conversation_id)
         if not path.is_file():
             return -1
@@ -210,9 +252,22 @@ class TranscriptMonitor:
         return None
 
     def get_new_user_turns(
-        self, conversation_id: str, after_step_index: int
+        self, conversation_id: str, after_step_index: int,
+        since_time: Optional[str] = None,
     ) -> List[Tuple[int, str]]:
         """Get any new USER_INPUT steps that appeared after after_step_index.
+
+        Reads only the tail of the file (last 512KB) to avoid picking up historical
+        steps from before a context compaction rewrite. After compaction the transcript
+        is rewritten from a lower step_index, so old high-numbered steps that were in
+        the pre-compaction history will not appear in the tail window.
+
+        Args:
+            after_step_index: Only return steps with step_index > this value.
+            since_time: Optional ISO 8601 timestamp string. When provided, only
+                steps whose created_at >= since_time are returned. This handles the
+                post-compaction case where new steps may have lower step_indexes than
+                the historical maximum, by additionally filtering on wall-clock time.
 
         Returns list of (step_index, cleaned_prompt).
         """
@@ -221,28 +276,47 @@ class TranscriptMonitor:
             return []
 
         results: List[Tuple[int, str]] = []
+        chunk_size = 524288  # 512 KB tail window
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        data = json.loads(line)
-                    except Exception:
+            file_size = path.stat().st_size
+            with open(path, "rb") as f:
+                read_size = min(file_size, chunk_size)
+                f.seek(file_size - read_size)
+                raw = f.read().decode("utf-8", errors="replace")
+            lines = raw.splitlines()
+            # Skip the first (possibly partial) line if we didn't start at offset 0
+            start_idx = 1 if (file_size > chunk_size) else 0
+            for line in lines[start_idx:]:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except Exception:
+                    continue
+
+                idx = data.get("step_index", -1)
+
+                # Filter by timestamp if provided
+                if since_time:
+                    step_ts = data.get("created_at", "")
+                    if step_ts < since_time:
                         continue
 
-                    idx = data.get("step_index", -1)
-                    if idx <= after_step_index:
-                        continue
+                # Filter by step_index to prevent re-processing steps already synced
+                if after_step_index >= 0 and idx <= after_step_index:
+                    continue
 
-                    if data.get("type") == "USER_INPUT":
-                        content = str(data.get("content", ""))
-                        cleaned = self._clean_user_prompt(content)
-                        results.append((idx, cleaned))
+                if data.get("type") == "USER_INPUT":
+                    content = str(data.get("content", ""))
+                    cleaned = self._clean_user_prompt(content)
+                    results.append((idx, cleaned))
         except OSError:
             pass
         return results
+
+
+
 
     @staticmethod
     def _clean_user_prompt(raw: str) -> str:
@@ -276,14 +350,61 @@ class TranscriptMonitor:
                 return
             await asyncio.sleep(0.3)
 
+
         seen_steps: Set[int] = set()
-        file_pos = 0
         last_activity_time = time.time()
         last_seen_step = start_step_index - 1
 
+        # --- Fast-seek: position the file handle near start_step_index ---
+        # For large transcripts (post-compaction), the target step is near the end.
+        # We read from the tail with exponentially growing chunks until we find a
+        # line whose step_index <= start_step_index, then place the file cursor just
+        # before that line so readline() will re-read it in the main loop.
+        initial_file_pos = 0
+        try:
+            file_size = path.stat().st_size
+            if file_size > 65536 and start_step_index > 0:
+                chunk_size = 262144  # 256 KB initial window
+                while chunk_size <= file_size:
+                    seek_pos = max(0, file_size - chunk_size)
+                    with open(path, "rb") as probe:
+                        probe.seek(seek_pos)
+                        raw = probe.read(chunk_size).decode("utf-8", errors="replace")
+                    probe_lines = raw.splitlines()
+                    # Skip the first (possibly partial) line
+                    if seek_pos > 0:
+                        probe_lines = probe_lines[1:]
+                    found_anchor = False
+                    for probe_line in probe_lines:
+                        probe_line = probe_line.strip()
+                        if not probe_line:
+                            continue
+                        try:
+                            pd = json.loads(probe_line)
+                            pidx = pd.get("step_index", -1)
+                            if pidx != -1 and pidx <= start_step_index:
+                                found_anchor = True
+                                break
+                        except json.JSONDecodeError:
+                            continue
+                    if found_anchor:
+                        initial_file_pos = seek_pos
+                        break
+                    if chunk_size >= file_size:
+                        break
+                    chunk_size = min(chunk_size * 4, file_size)
+        except Exception:
+            initial_file_pos = 0
+        # ---------------------------------------------------------------
+
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as f:
+                if initial_file_pos > 0:
+                    f.seek(initial_file_pos)
+                    # Discard the first (possibly partial) line from the seek offset
+                    f.readline()
                 while True:
+
                     if time.time() - last_activity_time > timeout:
                         logger.warning(f"Timeout waiting for response in {conversation_id}")
                         yield ErrorEvent(
