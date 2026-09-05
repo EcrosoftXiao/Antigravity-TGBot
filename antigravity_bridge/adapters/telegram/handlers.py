@@ -256,10 +256,16 @@ class TelegramHandlers:
                 await self.agent_cli.get_metadata(target_id)
 
             self.session_mgr.bind_conversation(chat_id, target_id)
+            inferred_ws = self.agent_cli.get_conversation_workspace(target_id)
+            ws_desc = ""
+            if inferred_ws:
+                self.session_mgr.set_workspace(chat_id, inferred_ws)
+                ws_desc = f"\n• <b>工作区</b>：<code>{html.escape(inferred_ws)}</code>"
+
             clean_t = re.sub(r"\s+", " ", target_title).strip()
             title_desc = f"\n> <i>{html.escape(clean_t)}</i>" if clean_t else ""
             await update.effective_message.reply_text(
-                f"[OK] <b>已成功绑定到会话：</b>\n<code>{html.escape(target_id)}</code>{title_desc}",
+                f"[OK] <b>已成功绑定到会话：</b>\n<code>{html.escape(target_id)}</code>{title_desc}{ws_desc}",
                 parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
@@ -1380,6 +1386,10 @@ class TelegramHandlers:
             target_conv_id = data[6:]
             try:
                 self.session_mgr.bind_conversation(chat_id, target_conv_id)
+                inferred_ws = self.agent_cli.get_conversation_workspace(target_conv_id)
+                if inferred_ws:
+                    self.session_mgr.set_workspace(chat_id, inferred_ws)
+
                 await self._safe_answer_query(query, f"[OK] 已成功绑定会话 {target_conv_id[:8]}...")
                 text, markup = await self._render_sessions_view(chat_id)
                 await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)

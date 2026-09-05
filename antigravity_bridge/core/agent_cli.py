@@ -656,6 +656,62 @@ class AgentCliBridge:
 
         return history[-limit:]
 
+    def get_conversation_workspace(self, conversation_id: str) -> Optional[str]:
+        """Extract workspace directory used by a conversation from its transcript."""
+        transcript_file = (
+            self.gemini_dir
+            / "brain"
+            / conversation_id
+            / ".system_generated"
+            / "logs"
+            / "transcript.jsonl"
+        )
+        if not transcript_file.is_file():
+            return None
+
+        gemini_str = str(self.gemini_dir)
+        try:
+            with open(transcript_file, "r", encoding="utf-8", errors="replace") as f:
+                for i, line in enumerate(f):
+                    if i > 40:
+                        break
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                        content = data.get("content", "")
+                        if "The user has" in content and "workspace" in content:
+                            ws_match = re.search(r"(/[\w./-]+)\s*->\s*[\w./-]+", content)
+                            if ws_match:
+                                cand = ws_match.group(1).strip()
+                                if os.path.isdir(cand):
+                                    return cand
+
+                        tool_calls = data.get("tool_calls") or []
+                        for tc in tool_calls:
+                            args = tc.get("args") or {}
+                            if isinstance(args, str):
+                                try:
+                                    args = json.loads(args)
+                                except Exception:
+                                    args = {}
+                            for key in ("Cwd", "DirectoryPath", "SearchPath", "AbsolutePath", "TargetFile"):
+                                val = args.get(key)
+                                if isinstance(val, str):
+                                    val = val.strip('"\n\r\t ')
+                                    if os.path.isabs(val) and not val.startswith(gemini_str):
+                                        if os.path.isdir(val):
+                                            return val
+                                        elif os.path.isfile(val):
+                                            return str(Path(val).parent)
+                    except Exception:
+                        continue
+        except Exception as exc:
+            logger.debug(f"Failed to infer workspace for conversation {conversation_id}: {exc}")
+
+        return None
+
     async def get_available_models(self, force_refresh: bool = False) -> List[ModelOption]:
         """Fetch available models in real-time from Antigravity Language Server via GetAvailableModels RPC."""
         now = time.time()
