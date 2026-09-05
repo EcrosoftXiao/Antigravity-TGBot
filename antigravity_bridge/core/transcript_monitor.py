@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
@@ -207,6 +208,52 @@ class TranscriptMonitor:
         if artifact_info and artifact_step != -1:
             return artifact_step, artifact_info
         return None
+
+    def get_new_user_turns(
+        self, conversation_id: str, after_step_index: int
+    ) -> List[Tuple[int, str]]:
+        """Get any new USER_INPUT steps that appeared after after_step_index.
+
+        Returns list of (step_index, cleaned_prompt).
+        """
+        path = self.get_transcript_path(conversation_id)
+        if not path.is_file():
+            return []
+
+        results: List[Tuple[int, str]] = []
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except Exception:
+                        continue
+
+                    idx = data.get("step_index", -1)
+                    if idx <= after_step_index:
+                        continue
+
+                    if data.get("type") == "USER_INPUT":
+                        content = str(data.get("content", ""))
+                        cleaned = self._clean_user_prompt(content)
+                        results.append((idx, cleaned))
+        except OSError:
+            pass
+        return results
+
+    @staticmethod
+    def _clean_user_prompt(raw: str) -> str:
+        if not raw:
+            return ""
+        m = re.search(r"<USER_REQUEST>(.*?)</USER_REQUEST>", raw, re.DOTALL)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+        cleaned = re.sub(r"<ADDITIONAL_METADATA>.*?</ADDITIONAL_METADATA>", "", raw, flags=re.DOTALL)
+        cleaned = re.sub(r"<[^>]+>", "", cleaned)
+        return cleaned.strip()
 
     async def stream_events(
         self,

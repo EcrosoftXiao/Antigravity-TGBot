@@ -56,6 +56,7 @@ class TelegramHandlers:
         self.default_workspace = default_workspace or os.getcwd()
         self.pending_questions: Dict[int, Dict[str, Any]] = {}
         self.pending_approvals: Dict[int, Dict[str, Any]] = {}
+        self.synced_max_steps: Dict[str, int] = {}
         self.submitting_questions: Set[int] = set()
         self.last_submitted_time: Dict[int, float] = {}
         self.active_tasks: Dict[int, asyncio.Task] = {}
@@ -2519,7 +2520,11 @@ class TelegramHandlers:
                     content=actual_prompt,
                 )
 
+            if conv_id:
+                self.synced_max_steps[conv_id] = self.monitor.get_current_max_step(conv_id)
             await self._stream_turn_events(chat_id, conv_id, editor, start_step, update.effective_message)
+            if conv_id:
+                self.synced_max_steps[conv_id] = self.monitor.get_current_max_step(conv_id)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -2528,3 +2533,55 @@ class TelegramHandlers:
         finally:
             self.active_tasks.pop(chat_id, None)
             self.active_editors.pop(chat_id, None)
+
+    async def handle_external_client_turn(
+        self,
+        chat_id: int,
+        conv_id: str,
+        user_step_index: int,
+        prompt_text: str,
+    ) -> None:
+        """Forward an external dialogue initiated in the desktop IDE client to Telegram."""
+        bot = getattr(self, "bot", None)
+        if not bot:
+            return
+
+        display_prompt = prompt_text or "(无附带文本)"
+        try:
+            await bot.send_message(
+                chat_id=chat_id,
+                text=f"💬 <b>[IDE 客户端新对话]</b>\n<blockquote>{html.escape(display_prompt)}</blockquote>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to send external turn intro message: {exc}")
+
+        status_msg = None
+        try:
+            status_msg = await bot.send_message(
+                chat_id=chat_id,
+                text="[SYNC] <b>正在同步客户端 Agent 执行进度...</b>",
+                parse_mode=ParseMode.HTML,
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to send external turn status message: {exc}")
+            return
+
+        editor = ThrottledEditor(status_msg, min_interval=1.2)
+        self.active_editors[chat_id] = editor
+
+        start_step = user_step_index + 1
+        task = asyncio.create_task(
+            self._stream_turn_events(
+                chat_id=chat_id,
+                conv_id=conv_id,
+                editor=editor,
+                start_step=start_step,
+                reply_target_msg=status_msg,
+            )
+        )
+        self.active_tasks[chat_id] = task
+        try:
+            await task
+        except Exception as exc:
+            logger.debug(f"External stream task finished: {exc}")

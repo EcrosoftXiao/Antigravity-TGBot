@@ -175,6 +175,43 @@ class TelegramBotAdapter(BaseBotAdapter):
                     elif not pending_approval and current_approval:
                         self.handlers.pending_approvals.pop(chat_id, None)
 
+                    # Initialize synced baseline step for this conversation if not set
+                    if conv_id not in self.handlers.synced_max_steps:
+                        self.handlers.synced_max_steps[conv_id] = self.monitor.get_current_max_step(conv_id)
+
+                    # Check if an active turn is currently streaming for this chat_id
+                    is_active = bool(
+                        chat_id in self.handlers.active_tasks
+                        and not self.handlers.active_tasks[chat_id].done()
+                    )
+
+                    if is_active:
+                        self.handlers.synced_max_steps[conv_id] = max(
+                            self.handlers.synced_max_steps.get(conv_id, -1),
+                            self.monitor.get_current_max_step(conv_id),
+                        )
+                    else:
+                        # Detect any external turns from IDE client
+                        last_synced = self.handlers.synced_max_steps.get(conv_id, -1)
+                        new_turns = self.monitor.get_new_user_turns(conv_id, after_step_index=last_synced)
+                        if new_turns:
+                            user_step_idx, user_prompt = new_turns[-1]
+                            self.handlers.synced_max_steps[conv_id] = max(
+                                self.handlers.synced_max_steps.get(conv_id, -1),
+                                self.monitor.get_current_max_step(conv_id),
+                            )
+                            logger.info(
+                                f"Detected external IDE turn in conversation {conv_id[:8]} (step {user_step_idx}): '{user_prompt[:40]}'. Forwarding to Telegram..."
+                            )
+                            asyncio.create_task(
+                                self.handlers.handle_external_client_turn(
+                                    chat_id=chat_id,
+                                    conv_id=conv_id,
+                                    user_step_index=user_step_idx,
+                                    prompt_text=user_prompt,
+                                )
+                            )
+
             except asyncio.CancelledError:
                 break
             except Exception as exc:
