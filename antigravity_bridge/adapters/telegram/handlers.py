@@ -7,7 +7,7 @@ import logging
 import os
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -18,6 +18,7 @@ from antigravity_bridge.core.agent_cli import AgentCliBridge
 from antigravity_bridge.core.models import (
     ContentEvent,
     ErrorEvent,
+    ModelOption,
     ModelTier,
     AVAILABLE_MODELS,
     get_model_by_identifier,
@@ -267,6 +268,58 @@ class TelegramHandlers:
                 parse_mode=None,
             )
 
+    async def _render_sessions_view(self, chat_id: int, limit: int = 10) -> tuple[str, InlineKeyboardMarkup]:
+        """Render recent session list text and inline keyboard markup for quick switching."""
+        convs = await self.agent_cli.list_conversations(limit=limit)
+        if not convs:
+            empty_text = "未在 <code>~/.gemini/antigravity/brain</code> 中找到现有会话记录。"
+            empty_markup = InlineKeyboardMarkup([
+                [InlineKeyboardButton(text="➕ 开启全新会话", callback_data="s_act:new")]
+            ])
+            return empty_text, empty_markup
+
+        active_id = self.session_mgr.get_session(chat_id).active_conversation_id
+
+        lines = ["[SESSIONS] <b>最近的 Antigravity 本地会话列表：</b>\n"]
+        for i, c in enumerate(convs, 1):
+            marker = "[ACTIVE] " if c.conversation_id == active_id else "• "
+            time_str = c.created_at.replace("T", " ")[:19] if c.created_at else ""
+            clean_title = re.sub(r"\s+", " ", c.title).strip()
+            if len(clean_title) > 50:
+                clean_title = clean_title[:50].rstrip() + "..."
+            escaped_title = html.escape(clean_title)
+            escaped_id = html.escape(c.conversation_id)
+            escaped_time = html.escape(time_str)
+
+            lines.append(
+                f"{marker}<b>#{i}</b> <code>{escaped_id}</code>\n"
+                f"   <i>[{escaped_time}]</i> | {escaped_title}\n"
+            )
+
+        lines.append("────────────────────")
+        lines.append("[*] 点击下方按钮可直接切换绑定会话，或发送 <code>/session &lt;序号&gt;</code>。")
+        msg_text = "\n".join(lines)
+
+        keyboard: List[List[InlineKeyboardButton]] = []
+        row: List[InlineKeyboardButton] = []
+        for i, c in enumerate(convs[:6], 1):
+            is_active = (c.conversation_id == active_id)
+            prefix = "[✓] " if is_active else ""
+            time_short = c.created_at[5:16].replace("T", " ") if c.created_at else f"#{i}"
+            btn_text = f"{prefix}#{i} ({time_short})"
+            row.append(InlineKeyboardButton(text=btn_text, callback_data=f"s_sel:{c.conversation_id}"))
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+
+        keyboard.append([
+            InlineKeyboardButton(text="➕ 开启全新会话", callback_data="s_act:new"),
+            InlineKeyboardButton(text="🔄 刷新列表", callback_data="s_act:refresh"),
+        ])
+        return msg_text, InlineKeyboardMarkup(keyboard)
+
     async def cmd_sessions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._check_auth(update):
             return
@@ -277,37 +330,13 @@ class TelegramHandlers:
 
         status_msg = await update.effective_message.reply_text("[SCAN] 正在扫描本地 Antigravity 会话记录...")
         try:
-            convs = await self.agent_cli.list_conversations(limit=limit)
-            if not convs:
-                await status_msg.edit_text("未在 <code>~/.gemini/antigravity/brain</code> 中找到现有会话记录。", parse_mode=ParseMode.HTML)
-                return
-
             chat_id = update.effective_chat.id
-            active_id = self.session_mgr.get_session(chat_id).active_conversation_id
-
-            lines = ["[SESSIONS] <b>最近的 Antigravity 本地会话列表：</b>\n"]
-            for i, c in enumerate(convs, 1):
-                marker = "[ACTIVE] " if c.conversation_id == active_id else "• "
-                time_str = c.created_at.replace("T", " ")[:19] if c.created_at else ""
-                clean_title = re.sub(r"\s+", " ", c.title).strip()
-                if len(clean_title) > 60:
-                    clean_title = clean_title[:60].rstrip() + "..."
-                escaped_title = html.escape(clean_title)
-                escaped_id = html.escape(c.conversation_id)
-                escaped_time = html.escape(time_str)
-
-                lines.append(
-                    f"{marker}<b>#{i}</b> <code>{escaped_id}</code>\n"
-                    f"   <i>[{escaped_time}]</i> | {escaped_title}\n"
-                )
-
-            lines.append("[*] 发送 <code>/session &lt;序号&gt;</code>（如 <code>/session 1</code>）或 <code>/session &lt;会话ID&gt;</code> 即可快速绑定。")
-            msg_text = "\n".join(lines)
+            msg_text, markup = await self._render_sessions_view(chat_id, limit=limit)
             try:
-                await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML)
+                await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML, reply_markup=markup)
             except Exception:
                 plain_text = re.sub(r"<[^>]+>", "", msg_text)
-                await status_msg.edit_text(plain_text, parse_mode=None)
+                await status_msg.edit_text(plain_text, parse_mode=None, reply_markup=markup)
         except Exception as exc:
             logger.exception("Error listing sessions")
             await status_msg.edit_text(f"[ERROR] 获取会话列表失败：{exc}", parse_mode=None)
@@ -460,23 +489,17 @@ class TelegramHandlers:
     # ------------------------------------------------------------------
     # Command: /models & /model [number|name]
     # ------------------------------------------------------------------
-    async def cmd_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        if not await self._check_auth(update):
-            return
-
-        chat_id = update.effective_chat.id
+    async def _render_models_view(self, chat_id: int, show_all: bool = False, force_refresh: bool = False) -> tuple[str, InlineKeyboardMarkup]:
+        """Render available models text and inline keyboard markup for quick switching."""
         session = self.session_mgr.get_session(chat_id)
         current_model = session.model or self.default_model
 
-        status_msg = await update.effective_message.reply_text("[MODELS] 正在从本地 Antigravity 获取实时模型列表...")
-
         try:
-            live_models = await self.agent_cli.get_available_models(force_refresh=True)
+            live_models = await self.agent_cli.get_available_models(force_refresh=force_refresh)
         except Exception as exc:
             logger.warning(f"Failed to fetch live models: {exc}")
             live_models = AVAILABLE_MODELS
 
-        show_all = bool(context.args and context.args[0].lower() in ("all", "full", "全部"))
         display_models = live_models if show_all else [m for m in live_models if getattr(m, "is_recommended", True)]
         if not display_models:
             display_models = live_models
@@ -486,8 +509,8 @@ class TelegramHandlers:
             if reset_time_str:
                 try:
                     clean_iso = reset_time_str.replace("Z", "+00:00")
-                    reset_dt = datetime.datetime.fromisoformat(clean_iso)
-                    now_dt = datetime.datetime.now(datetime.timezone.utc)
+                    reset_dt = datetime.fromisoformat(clean_iso)
+                    now_dt = datetime.now(timezone.utc)
                     secs = int((reset_dt - now_dt).total_seconds())
                     if secs <= 0:
                         resets_in = "Resets soon"
@@ -570,20 +593,65 @@ class TelegramHandlers:
         lines.append("────────────────────")
         lines.append(
             "<b>[*] 切换模型使用指南:</b>\n"
-            "• <b>按精准分级序号</b>：发送 <code>/model 1.1</code> (High 档), <code>/model 1.2</code> (Medium 档), <code>/model 1.3</code> (Low 档)\n"
-            "• <b>按大类主序号</b>：发送 <code>/model 1</code> (自动选择 Gemini 3.8 默认推荐项 1.1)\n"
-            "• <b>按模型名称/别名</b>：发送 <code>/model sonnet</code>, <code>/model opus</code>, <code>/model 3.8</code>, <code>/model pro</code>, <code>/model gpt</code>\n"
-            "• <b>带模型开启新会话</b>：发送 <code>/new 1.1</code> 或 <code>/new sonnet</code> 直接切换并开启新对话"
+            "• <b>点击下方按钮</b>可直接秒级热切换模型（保留上下文）\n"
+            "• <b>或发送指令</b>：<code>/model 1.1</code> (分级序号), <code>/model sonnet</code> (模型别名)\n"
+            "• <b>带模型开启新会话</b>：<code>/new 1.1</code> 或 <code>/new sonnet</code>"
         )
         if not show_all and len(live_models) > len(display_models):
             lines.append(f"\n💡 当前展示核心推荐模型。发送 <code>/models all</code> 可查看全部 {len(live_models)} 款底层模型。")
 
         msg_text = "\n".join(lines)
+
+        # Build inline keyboard buttons
+        keyboard: List[List[InlineKeyboardButton]] = []
+        for major_idx, opts in groups.items():
+            if len(opts) == 1:
+                opt = opts[0]
+                is_active = (opt.id == current_model or opt.code == current_model or opt.tier == current_model)
+                prefix = "[✓] " if is_active else ""
+                s_name = get_series_title(opt)
+                btn_text = f"{prefix}#{opt.code} {s_name}"
+                if len(btn_text) > 24:
+                    btn_text = btn_text[:22] + ".."
+                keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"m_sel:{opt.id}")])
+            else:
+                row: List[InlineKeyboardButton] = []
+                for opt in opts:
+                    is_active = (opt.id == current_model or opt.code == current_model or opt.tier == current_model)
+                    prefix = "[✓] " if is_active else ""
+                    lvl_str = opt.badge or (opt.id.split("-")[-1].capitalize())
+                    btn_text = f"{prefix}#{opt.code} {lvl_str}"
+                    row.append(InlineKeyboardButton(text=btn_text, callback_data=f"m_sel:{opt.id}"))
+                    if len(row) == 3:
+                        keyboard.append(row)
+                        row = []
+                if row:
+                    keyboard.append(row)
+
+        keyboard.append([
+            InlineKeyboardButton(text="🔄 刷新可用配额与状态", callback_data="m_act:refresh")
+        ])
+
+        return msg_text, InlineKeyboardMarkup(keyboard)
+
+    async def cmd_models(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not await self._check_auth(update):
+            return
+
+        chat_id = update.effective_chat.id
+        show_all = bool(context.args and context.args[0].lower() in ("all", "full", "全部"))
+
+        status_msg = await update.effective_message.reply_text("[MODELS] 正在从本地 Antigravity 获取实时模型列表...")
         try:
-            await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML)
-        except Exception:
-            plain = re.sub(r"<[^>]+>", "", msg_text)
-            await status_msg.edit_text(plain, parse_mode=None)
+            msg_text, markup = await self._render_models_view(chat_id, show_all=show_all, force_refresh=True)
+            try:
+                await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            except Exception:
+                plain = re.sub(r"<[^>]+>", "", msg_text)
+                await status_msg.edit_text(plain, parse_mode=None, reply_markup=markup)
+        except Exception as exc:
+            logger.exception("Failed to fetch live models")
+            await status_msg.edit_text(f"[ERROR] 获取模型列表失败：{exc}", parse_mode=None)
 
     async def cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._check_auth(update):
@@ -1266,6 +1334,78 @@ class TelegramHandlers:
             await self._safe_answer_query(query, "[DENIED] 未授权用户，禁止操作", show_alert=True)
             return
 
+        # --------------------------------------------------------------
+        # Inline Model Switching & Actions
+        # --------------------------------------------------------------
+        if data.startswith("m_sel:"):
+            model_id = data[6:]
+            matched_opt = get_model_by_identifier(model_id)
+            if not matched_opt:
+                try:
+                    live_models = await self.agent_cli.get_available_models(force_refresh=True)
+                    matched_opt = get_model_by_identifier(model_id, model_list=live_models)
+                except Exception:
+                    pass
+
+            if matched_opt:
+                active_session = self.session_mgr.get_session(chat_id)
+                if active_session and active_session.active_conversation_id:
+                    self.session_mgr.continue_session_with_new_model(chat_id, matched_opt.id)
+                else:
+                    self.session_mgr.set_model(chat_id, matched_opt.id)
+
+                await self._safe_answer_query(query, f"[OK] 已切换至 #{matched_opt.code} {matched_opt.display_name}")
+                try:
+                    text, markup = await self._render_models_view(chat_id)
+                    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+                except Exception as exc:
+                    logger.debug(f"Failed to update models markup after selection: {exc}")
+            else:
+                await self._safe_answer_query(query, "[ERROR] 未找到所选模型", show_alert=True)
+            return
+
+        elif data == "m_act:refresh":
+            await self._safe_answer_query(query, "[OK] 正在刷新可用模型与配额...")
+            try:
+                text, markup = await self._render_models_view(chat_id, force_refresh=True)
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            except Exception as exc:
+                logger.debug(f"Failed to refresh models view: {exc}")
+            return
+
+        # --------------------------------------------------------------
+        # Inline Session Switching & Actions
+        # --------------------------------------------------------------
+        elif data.startswith("s_sel:"):
+            target_conv_id = data[6:]
+            try:
+                self.session_mgr.bind_conversation(chat_id, target_conv_id)
+                await self._safe_answer_query(query, f"[OK] 已成功绑定会话 {target_conv_id[:8]}...")
+                text, markup = await self._render_sessions_view(chat_id)
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            except Exception as exc:
+                await self._safe_answer_query(query, f"[ERROR] 绑定失败：{exc}", show_alert=True)
+            return
+
+        elif data == "s_act:new":
+            self.session_mgr.new_session(chat_id)
+            await self._safe_answer_query(query, "[NEW] 已开启新会话！下次发送消息将创建全新对话。")
+            try:
+                text, markup = await self._render_sessions_view(chat_id)
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            except Exception as exc:
+                logger.debug(f"Failed to refresh sessions after new: {exc}")
+            return
+
+        elif data == "s_act:refresh":
+            await self._safe_answer_query(query, "[OK] 正在刷新会话列表...")
+            try:
+                text, markup = await self._render_sessions_view(chat_id)
+                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            except Exception as exc:
+                logger.debug(f"Failed to refresh sessions: {exc}")
+            return
+
         pending = self.pending_questions.get(chat_id)
         if not pending:
             pending = self._try_recover_pending_question(chat_id, query.message)
@@ -1715,6 +1855,67 @@ class TelegramHandlers:
                 f"- {target_path.resolve()} (name: {clean_name}, type: {mime_type}, size: {size_str})\n"
                 f"</ADDITIONAL_METADATA>"
             )
+
+        await self._dispatch_agent_prompt(update, prompt, editor=editor)
+
+    async def handle_voice_or_audio(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming voice notes and audio clips from user, store in native artifacts, and dispatch to Agent."""
+        if not await self._check_auth(update):
+            return
+
+        msg = update.effective_message
+        if not msg:
+            return
+
+        voice = msg.voice
+        audio = msg.audio
+        if not voice and not audio:
+            return
+
+        chat_id = update.effective_chat.id
+        session = self.session_mgr.get_session(chat_id)
+        conv_id = session.active_conversation_id
+
+        media_type = "语音留言" if voice else "音频文件"
+        status_msg = await msg.reply_text(
+            f"[VOICE] <i>正在接收并下载{media_type}...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        editor = ThrottledEditor(status_msg, min_interval=1.2)
+
+        timestamp_ms = int(time.time() * 1000)
+        if voice:
+            ext = ".ogg"
+            filename = f"voice_{timestamp_ms}{ext}"
+            tg_media = voice
+        else:
+            orig_name = audio.file_name or "audio.mp3"
+            ext = Path(orig_name).suffix or ".mp3"
+            clean_name = re.sub(r"[^\w.-]", "_", Path(orig_name).stem)
+            filename = f"{clean_name}_{timestamp_ms}{ext}"
+            tg_media = audio
+
+        upload_dir = self._get_user_upload_dir(conv_id)
+        target_path = upload_dir / filename
+
+        try:
+            tg_file = await tg_media.get_file()
+            await tg_file.download_to_drive(custom_path=str(target_path))
+        except Exception as e:
+            logger.exception(f"Failed to download {media_type} from Telegram")
+            await editor.edit(f"[ERROR] {media_type}下载失败：{e}", force=True, parse_mode=None)
+            return
+
+        caption = (msg.caption or "").strip()
+        user_text = caption or f"请听取并处理这段{media_type}内容。"
+        prompt = (
+            f"{user_text}\n\n"
+            f"<ADDITIONAL_METADATA>\n"
+            f"The user has sent a voice/audio message:\n"
+            f"- {target_path.resolve()}\n"
+            f"Listen to the audio, transcribe or analyze its content, and fulfill the user request.\n"
+            f"</ADDITIONAL_METADATA>"
+        )
 
         await self._dispatch_agent_prompt(update, prompt, editor=editor)
 

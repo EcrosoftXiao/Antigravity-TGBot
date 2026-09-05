@@ -86,10 +86,26 @@ class TelegramBotAdapter(BaseBotAdapter):
         app.add_handler(CommandHandler(["send"], self.handlers.cmd_send))
         app.add_handler(CommandHandler(["cancel"], self.handlers.cmd_cancel))
         app.add_handler(CommandHandler(["stop"], self.handlers.cmd_stop))
+        app.add_handler(CommandHandler(["getfile", "get"], self.handlers.cmd_getfile))
 
         # Plain text message handler
         app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handlers.handle_message)
+        )
+
+        # Photo message handler
+        app.add_handler(
+            MessageHandler(filters.PHOTO, self.handlers.handle_photo)
+        )
+
+        # Document/File message handler
+        app.add_handler(
+            MessageHandler(filters.Document.ALL & ~filters.COMMAND, self.handlers.handle_document)
+        )
+
+        # Voice and Audio message handler
+        app.add_handler(
+            MessageHandler((filters.VOICE | filters.AUDIO) & ~filters.COMMAND, self.handlers.handle_voice_or_audio)
         )
 
         # Callback query handler for inline buttons
@@ -165,6 +181,7 @@ class TelegramBotAdapter(BaseBotAdapter):
                 BotCommand("send", "发送并执行批量暂存的消息"),
                 BotCommand("cancel", "取消并清空暂存消息"),
                 BotCommand("stop", "中断当前正在执行的任务"),
+                BotCommand("getfile", "下载并获取本地工程文件"),
                 BotCommand("help", "查看完整指令帮助手册"),
             ]
             await self.app.bot.set_my_commands(bot_commands)
