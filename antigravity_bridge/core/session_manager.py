@@ -61,12 +61,27 @@ class SessionManager:
         """Unbind current conversation from this chat."""
         session = self.get_session(chat_id)
         session.active_conversation_id = None
+        session.pending_model_switch = None
         self.save()
 
-    def set_model(self, chat_id: int, model: str) -> None:
-        """Set preferred model tier for subsequent new conversations."""
+    def new_session(self, chat_id: int, model: Optional[str] = None) -> SessionState:
+        """Reset conversation bindings and prepare for a brand new conversation."""
+        session = self.get_session(chat_id)
+        session.active_conversation_id = None
+        session.pending_model_switch = None
+        if model:
+            session.model = model
+        self.save()
+        return session
+
+    def set_model(self, chat_id: int, model: str, display_name: Optional[str] = None) -> None:
+        """Set model in-place without breaking active conversation session."""
         session = self.get_session(chat_id)
         session.model = model
+        if session.active_conversation_id:
+            session.pending_model_switch = display_name or model
+        else:
+            session.pending_model_switch = None
         self.save()
 
     def set_workspace(self, chat_id: int, workspace: str) -> None:

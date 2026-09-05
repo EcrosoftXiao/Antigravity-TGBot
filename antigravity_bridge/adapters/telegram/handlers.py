@@ -170,10 +170,9 @@ class TelegramHandlers:
                     pass
             if opt:
                 model = opt.id
-                self.session_mgr.set_model(chat_id, model)
 
-        # Clear active conversation binding locally
-        self.session_mgr.clear_conversation(chat_id)
+        # Clear active conversation binding locally and prepare new session
+        self.session_mgr.new_session(chat_id, model=model)
 
         opt = get_model_by_identifier(model)
         model_display = opt.display_name if opt else model
@@ -691,7 +690,7 @@ class TelegramHandlers:
             )
             return
 
-        self.session_mgr.set_model(chat_id, matched_opt.id)
+        self.session_mgr.set_model(chat_id, matched_opt.id, display_name=matched_opt.display_name)
         quota_info_text = ""
         resets_in = ""
         if matched_opt.reset_time:
@@ -714,13 +713,22 @@ class TelegramHandlers:
             suffix = f" ({resets_in})" if resets_in else ""
             quota_info_text = f"\n• *可用额度*：`Five Hour Limit Remaining: {pct_str}{suffix}`"
 
+        curr_conv = session.active_conversation_id
+        if curr_conv:
+            conv_status = f"• *当前活动会话*：`{curr_conv[:8]}...` *(保持在线，原地生效)*\n"
+            note = f"[*] 会话上下文与工作区完全保留，下一条消息将在此会话中直接使用该模型执行。"
+        else:
+            conv_status = "• *当前活动会话*：_(暂无，发送消息将创建全新会话)_\n"
+            note = f"[*] 发送消息将使用此模型开启全新会话。"
+
         reply = (
-            f"[OK] *已成功切换模型！*\n\n"
+            f"[OK] *已成功原地热切换模型！*\n\n"
             f"• *序号*：`#{matched_opt.code}`\n"
             f"• *模型*：*{matched_opt.display_name}*\n"
             f"• *规格*：`{matched_opt.badge}` (映射底座：`{matched_opt.tier}`){quota_info_text}\n"
+            f"{conv_status}"
             f"• *说明*：_{matched_opt.description}_\n\n"
-            f"[*] 新建会话（`/new`）将使用此模型进行驱动。"
+            f"{note}"
         )
         await update.effective_message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
 
@@ -1354,13 +1362,8 @@ class TelegramHandlers:
                     pass
 
             if matched_opt:
-                active_session = self.session_mgr.get_session(chat_id)
-                if active_session and active_session.active_conversation_id:
-                    self.session_mgr.continue_session_with_new_model(chat_id, matched_opt.id)
-                else:
-                    self.session_mgr.set_model(chat_id, matched_opt.id)
-
-                await self._safe_answer_query(query, f"[OK] 已切换至 #{matched_opt.code} {matched_opt.display_name}")
+                self.session_mgr.set_model(chat_id, matched_opt.id, display_name=matched_opt.display_name)
+                await self._safe_answer_query(query, f"[OK] 已原地切换至 #{matched_opt.code} {matched_opt.display_name}")
                 try:
                     text, markup = await self._render_models_view(chat_id)
                     await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
@@ -2235,10 +2238,23 @@ class TelegramHandlers:
             else:
                 # Existing conversation: record current max step
                 start_step = self.monitor.get_current_max_step(conv_id) + 1
+                actual_prompt = prompt
+                if session.pending_model_switch:
+                    switch_name = session.pending_model_switch
+                    session.pending_model_switch = None
+                    self.session_mgr.save()
+                    actual_prompt = (
+                        f"<USER_SETTINGS_CHANGE>\n"
+                        f"The user changed setting `Model Selection` to {switch_name}. "
+                        f"No need to comment on this change if the user doesn't ask about it. "
+                        f"If reporting what model you are, please use a human readable name instead of the exact string.\n"
+                        f"</USER_SETTINGS_CHANGE>\n\n"
+                        f"{prompt}"
+                    )
                 await editor.edit(f"[DISPATCH] 正在派发任务至会话 `{conv_id[:8]}...`")
                 await self.agent_cli.send_message(
                     conversation_id=conv_id,
-                    content=prompt,
+                    content=actual_prompt,
                 )
 
             await self._stream_turn_events(chat_id, conv_id, editor, start_step, update.effective_message)

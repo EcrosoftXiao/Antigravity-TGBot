@@ -225,6 +225,7 @@ class SessionState:
     chat_id: int
     active_conversation_id: Optional[str] = None
     model: str = "gemini-3.8-flash"
+    pending_model_switch: Optional[str] = None
     workspace: str = ""
     batch_mode: bool = False
     batch_buffer: List[str] = field(default_factory=list)
@@ -238,6 +239,7 @@ class SessionState:
             "chat_id": self.chat_id,
             "active_conversation_id": self.active_conversation_id,
             "model": self.model,
+            "pending_model_switch": self.pending_model_switch,
             "workspace": self.workspace,
             "batch_mode": self.batch_mode,
             "batch_buffer": self.batch_buffer,
@@ -249,6 +251,7 @@ class SessionState:
             chat_id=data["chat_id"],
             active_conversation_id=data.get("active_conversation_id"),
             model=data.get("model", "gemini-3.8-flash"),
+            pending_model_switch=data.get("pending_model_switch"),
             workspace=data.get("workspace", ""),
             batch_mode=data.get("batch_mode", False),
             batch_buffer=data.get("batch_buffer", []),
