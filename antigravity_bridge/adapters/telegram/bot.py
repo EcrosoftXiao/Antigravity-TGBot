@@ -91,6 +91,7 @@ class TelegramBotAdapter(BaseBotAdapter):
         app.add_handler(CommandHandler(["stop"], self.handlers.cmd_stop))
         app.add_handler(CommandHandler(["getfile", "get"], self.handlers.cmd_getfile))
         app.add_handler(CommandHandler(["listfile", "ls", "tree"], self.handlers.cmd_listfile))
+        app.add_handler(CommandHandler(["view", "cat"], self.handlers.cmd_view))
 
         # Plain text message handler
         app.add_handler(
@@ -267,6 +268,7 @@ class TelegramBotAdapter(BaseBotAdapter):
                 BotCommand("stop", "中断当前正在执行的任务"),
                 BotCommand("getfile", "下载并获取本地工程文件"),
                 BotCommand("listfile", "展示本地工程目录结构"),
+                BotCommand("view", "在线预览文本文件内容"),
                 BotCommand("help", "查看完整指令帮助手册"),
             ]
             await self.app.bot.set_my_commands(bot_commands)

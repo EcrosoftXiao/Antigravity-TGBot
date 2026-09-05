@@ -2329,6 +2329,68 @@ class TelegramHandlers:
         final_msg = f"[WORKSPACE] *目录结构* (`{target_dir}`):\n```text\n{tree_out}\n```\n[*] _提示：使用 `/getfile <相对路径>` 获取文件_"
         await status_msg.edit_text(final_msg, parse_mode=ParseMode.MARKDOWN)
 
+    async def cmd_view(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """View the contents of a text file inline."""
+        if not await self._check_auth(update):
+            return
+
+        args = context.args or []
+        if not args:
+            await update.effective_message.reply_text(
+                "[*] *用法*：`/view <文件路径>`\n例如：`/view README.md` 或相对路径",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        req_path = " ".join(args).strip()
+        chat_id = update.effective_chat.id
+        session = self.session_mgr.get_session(chat_id)
+        target = Path(req_path)
+        if not target.is_absolute():
+            target = Path(session.workspace or self.default_workspace) / target
+        
+        target = target.resolve()
+        
+        if not target.is_file():
+            await update.effective_message.reply_text(
+                f"[ERROR] 未找到指定文件：`{target}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        try:
+            file_size = target.stat().st_size
+            if file_size > 1024 * 512: 
+                await update.effective_message.reply_text(
+                    f"[ERROR] 文件过大 ({file_size/1024:.1f} KB)。请使用 `/getfile` 下载查看。",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+                return
+            
+            with open(target, 'r', encoding='utf-8') as f:
+                content = f.read(3800)
+                is_truncated = False
+                if f.read(1):
+                    is_truncated = True
+
+            ext = target.suffix.lstrip('.')
+            code_lang = ext if ext else 'text'
+            content = content.replace("```", "` ` `")
+
+            msg = f"📄 **{target.name}**\n```{code_lang}\n{content}\n```"
+            if is_truncated:
+                msg += f"\n_...文件过长已截断显示，请使用 `/getfile {target.name}` 获取完整文件_"
+
+            await update.effective_message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+
+        except UnicodeDecodeError:
+            await update.effective_message.reply_text(
+                "[ERROR] 无法读取文件内容（可能是二进制文件）。请使用 `/getfile` 进行下载。",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception as exc:
+            await update.effective_message.reply_text(f"[ERROR] 读取失败: {exc}")
+
     async def _send_image_file(
         self,
         chat_id: int,
