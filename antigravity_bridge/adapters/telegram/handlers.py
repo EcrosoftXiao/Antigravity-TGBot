@@ -750,7 +750,7 @@ class TelegramHandlers:
 
         if not os.path.isdir(target_path):
             await update.effective_message.reply_text(
-                f"[ERROR] 目录不存在：`{target_path}`",
+                f"[ERROR] 目标目录不存在或不是有效文件夹：\n`{target_path}`\n\n请检查路径是否正确后重新输入。",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -2242,6 +2242,11 @@ class TelegramHandlers:
                 )
 
             await self._stream_turn_events(chat_id, conv_id, editor, start_step, update.effective_message)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("Error creating or dispatching task to Antigravity Agent")
+            await editor.edit(f"[ERROR] *执行失败：* `{exc}`", force=True)
         finally:
             self.active_tasks.pop(chat_id, None)
             self.active_editors.pop(chat_id, None)

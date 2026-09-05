@@ -174,32 +174,28 @@ class AgentCliBridge:
                 logger.warning(f"Failed to update project settings for {pfile.name}: {exc}")
 
     def _find_or_create_project_id_for_dir(self, cwd: str) -> Optional[str]:
-        """Resolve or automatically register Antigravity project ID for a directory."""
+        """Resolve or automatically register Antigravity project ID for an exact directory."""
         projects_dir = self.gemini_dir.parent / "config" / "projects"
         if not projects_dir.is_dir():
             projects_dir.mkdir(parents=True, exist_ok=True)
 
         abs_cwd = os.path.abspath(cwd)
-        home_dir = str(Path.home().resolve())
+        if not os.path.isdir(abs_cwd):
+            raise FileNotFoundError(f"工作区目录不存在或不是有效文件夹: {abs_cwd}")
+
         exact_matches: List[Tuple[int, str]] = []
-        sub_matches: List[Tuple[int, str]] = []
-        fallback: Optional[str] = None
 
         for p in projects_dir.glob("*.json"):
             try:
                 with open(p, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     p_id = data.get("id")
-                    if not fallback and p_id:
-                        fallback = p_id
                     for res in data.get("projectResources", {}).get("resources", []):
                         f_uri = res.get("gitFolder", {}).get("folderUri", "")
                         if f_uri.startswith("file://"):
                             f_path = os.path.abspath(f_uri[7:])
                             if abs_cwd == f_path:
                                 exact_matches.append((len(f_path), p_id))
-                            elif abs_cwd.startswith(f_path + "/") and f_path != home_dir and f_path != "/":
-                                sub_matches.append((len(f_path), p_id))
             except Exception:
                 continue
 
@@ -209,14 +205,7 @@ class AgentCliBridge:
             self._ensure_project_settings(projects_dir / f"{matched_pid}.json", abs_cwd)
             return matched_pid
 
-        # 2. Sub-folder of an actual non-home git repository
-        if sub_matches:
-            sub_matches.sort(key=lambda x: x[0], reverse=True)
-            matched_pid = sub_matches[0][1]
-            self._ensure_project_settings(projects_dir / f"{matched_pid}.json", abs_cwd)
-            return matched_pid
-
-        # 3. Auto-register new dedicated project config for this directory
+        # 2. Auto-register new dedicated project config for this exact directory
         try:
             import uuid
             new_pid = str(uuid.uuid4())
@@ -248,7 +237,7 @@ class AgentCliBridge:
             return new_pid
         except Exception as exc:
             logger.warning(f"Failed to auto-register project config for {abs_cwd}: {exc}")
-            return fallback
+            return None
 
     def _get_clean_env(self, cwd: Optional[str] = None) -> Dict[str, str]:
         """Return environment variables with active Antigravity Language Server connection."""
