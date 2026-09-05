@@ -601,23 +601,25 @@ class AgentCliBridge:
             first_prompt = ""
             created_at = ""
 
-            if transcript_file.is_file():
-                try:
-                    with open(transcript_file, "r", encoding="utf-8", errors="replace") as f:
-                        first_line = f.readline()
-                        if first_line:
-                            data = json.loads(first_line)
-                            created_at = data.get("created_at", "")
-                            raw_content = data.get("content", "")
-                            # Strip XML user tags if present
-                            clean_prompt = re.sub(r"<USER_REQUEST>|\n?</USER_REQUEST>", "", raw_content).strip()
-                            clean_prompt = re.sub(r"<ADDITIONAL_METADATA>[\s\S]*?</ADDITIONAL_METADATA>", "", clean_prompt).strip()
-                            first_prompt = clean_prompt.split("\n")[0][:100]
-                except Exception:
-                    pass
+            if not transcript_file.is_file():
+                continue
+
+            try:
+                with open(transcript_file, "r", encoding="utf-8", errors="replace") as f:
+                    first_line = f.readline()
+                    if first_line:
+                        data = json.loads(first_line)
+                        created_at = data.get("created_at", "")
+                        raw_content = data.get("content", "")
+                        # Strip XML user tags if present
+                        clean_prompt = re.sub(r"<USER_REQUEST>|\n?</USER_REQUEST>", "", raw_content).strip()
+                        clean_prompt = re.sub(r"<ADDITIONAL_METADATA>[\s\S]*?</ADDITIONAL_METADATA>", "", clean_prompt).strip()
+                        first_prompt = clean_prompt.split("\n")[0][:100]
+            except Exception:
+                pass
 
             if not first_prompt:
-                first_prompt = "(No initial prompt)"
+                first_prompt = "(Empty conversation)"
 
             conv_list.append(
                 ConversationInfo(

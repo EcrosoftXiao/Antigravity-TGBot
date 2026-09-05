@@ -248,11 +248,17 @@ class TelegramHandlers:
                 target_id = target_arg
 
         try:
-            # Validate conversation existence: check local directory or agentapi
-            brain_dir = self.agent_cli.gemini_dir / "brain" / target_id
-            if not brain_dir.is_dir():
+            # Validate conversation existence: verify transcript log exists
+            transcript_file = self.agent_cli.gemini_dir / "brain" / target_id / ".system_generated" / "logs" / "transcript.jsonl"
+            if not transcript_file.is_file():
                 # Attempt metadata check through agentapi
                 await self.agent_cli.get_metadata(target_id)
+                if not transcript_file.is_file():
+                    await update.effective_message.reply_text(
+                        f"[ERROR] 无法绑定会话：该会话未初始化或缺少交互日志（`{target_id[:8]}...`）。\n请使用 `/new` 开启新会话或选择其他有效会话。",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return
 
             self.session_mgr.bind_conversation(chat_id, target_id)
             inferred_ws = self.agent_cli.get_conversation_workspace(target_id)
@@ -2122,6 +2128,8 @@ class TelegramHandlers:
 
                 elif isinstance(event, ErrorEvent):
                     self.pending_questions.pop(chat_id, None)
+                    if "Transcript log not found" in event.error_message:
+                        self.session_mgr.clear_conversation(chat_id)
                     await editor.edit(f"[ERROR] *执行出错：* {event.error_message}", force=True)
                     return
 
@@ -2225,6 +2233,16 @@ class TelegramHandlers:
         self.active_editors[chat_id] = editor
 
         try:
+            # Auto-heal: verify that active conversation actually has a transcript file
+            if conv_id:
+                transcript_path = self.monitor.get_transcript_path(conv_id)
+                if not transcript_path.is_file():
+                    logger.warning(
+                        f"Active conversation {conv_id} has no transcript log on disk. Auto-healing to new conversation."
+                    )
+                    self.session_mgr.clear_conversation(chat_id)
+                    conv_id = None
+
             # Auto-create conversation if none exists
             if not conv_id:
                 await editor.edit("[INIT] 正在初始化新的 Antigravity 会话...")
