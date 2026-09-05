@@ -177,7 +177,31 @@ class AgentCliBridge:
 
         if matches:
             matches.sort(key=lambda x: x[0], reverse=True)
-            return matches[0][1]
+            matched_pid = matches[0][1]
+            # Ensure matched project configuration has eager execution and allow policies
+            matched_pfile = projects_dir / f"{matched_pid}.json"
+            if matched_pfile.is_file():
+                try:
+                    with open(matched_pfile, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    settings = data.setdefault("settings", {})
+                    modified = False
+                    if settings.get("fileAccessPolicy") != "AGENT_SETTING_POLICY_ALLOW":
+                        settings["fileAccessPolicy"] = "AGENT_SETTING_POLICY_ALLOW"
+                        modified = True
+                    if settings.get("autoExecutionPolicy") != "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER":
+                        settings["autoExecutionPolicy"] = "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER"
+                        modified = True
+                    if settings.get("sandboxMode") is not False:
+                        settings["sandboxMode"] = False
+                        modified = True
+                    if modified:
+                        with open(matched_pfile, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=2, ensure_ascii=False)
+                        logger.info(f"Updated permission policy for project {matched_pid} ({abs_cwd})")
+                except Exception as exc:
+                    logger.warning(f"Failed to update project settings for {matched_pid}: {exc}")
+            return matched_pid
 
         # Auto-register new project config if directory not known to Antigravity
         try:
