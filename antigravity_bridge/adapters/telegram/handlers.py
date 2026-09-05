@@ -2381,6 +2381,26 @@ class TelegramHandlers:
                                         or "USER" in stop_reason
                                     ):
                                         is_stopped = True
+                                    elif tracker.phase == Phase.INIT and (now - tracker.turn_start_time > 5.0):
+                                        # If stuck in INIT for > 5s: check if the turn at start_step was terminated
+                                        # without generating any model response
+                                        # E.g. start_step - 1 was USER_INPUT, and no running step exists for start_step
+                                        user_step_idx = start_step - 1
+                                        if 0 <= user_step_idx < len(steps):
+                                            target_user_step = steps[user_step_idx]
+                                            # If subsequent steps are already newer USER_INPUT or no step generated at all,
+                                            # and the active generation is not running on this step:
+                                            has_generating_child = False
+                                            for s in steps[start_step:]:
+                                                if s.get("status") in ("CORTEX_STEP_STATUS_RUNNING", "CORTEX_STEP_STATUS_GENERATING"):
+                                                    has_generating_child = True
+                                                    break
+                                                # If another USER_INPUT exists after start_step, this turn was superseded/stopped
+                                                if s.get("type") == "CORTEX_STEP_TYPE_USER_INPUT":
+                                                    is_stopped = True
+                                                    break
+                                            if not has_generating_child and c_status == "CASCADE_RUN_STATUS_IDLE":
+                                                is_stopped = True
 
                             if is_stopped:
                                 logger.info(f"Detected genuine client-side stop in {conv_id[:8]} (status: {c_status})")

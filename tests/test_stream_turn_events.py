@@ -24,7 +24,7 @@ def test_full_turn_lifecycle():
     html_thinking = tracker.format_status_html()
     assert "[THINKING]" in html_thinking
     assert "Formulating Execution Strategy" in html_thinking
-    assert "<blockquote>" in html_thinking
+    assert "<blockquote expandable>" in html_thinking
 
     # 3. Invoke Subagent
     tracker.on_tool_call(
