@@ -192,7 +192,7 @@ class TranscriptMonitor:
                             req_feedback = bool(meta.get("RequestFeedback") or meta.get("request_feedback"))
 
                         file_basename = os.path.basename(target_file) if target_file else ""
-                        if req_feedback or file_basename in ("implementation_plan.md", "walkthrough.md"):
+                        if req_feedback and file_basename != "walkthrough.md":
                             summary = meta.get("Summary", "") if isinstance(meta, dict) else ""
                             artifact_info = {
                                 "artifact_path": target_file,
@@ -370,7 +370,7 @@ class TranscriptMonitor:
                                         if isinstance(meta, dict):
                                             req_feedback = bool(meta.get("RequestFeedback") or meta.get("request_feedback"))
                                         file_basename = os.path.basename(target_file) if target_file else ""
-                                        if req_feedback or file_basename in ("implementation_plan.md", "walkthrough.md"):
+                                        if req_feedback and file_basename != "walkthrough.md":
                                             summary_text = meta.get("Summary", "") if isinstance(meta, dict) else ""
                                             yield ArtifactReviewEvent(
                                                 step_index=step_idx,

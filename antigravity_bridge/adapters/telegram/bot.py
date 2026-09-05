@@ -160,20 +160,26 @@ class TelegramBotAdapter(BaseBotAdapter):
 
                     if pending_approval and not current_approval:
                         step_idx, artifact_info = pending_approval
-                        try:
-                            await self.handlers.send_pending_approval(
-                                bot=self.app.bot,
-                                chat_id=chat_id,
-                                conv_id=conv_id,
-                                artifact_path=artifact_info.get("artifact_path", ""),
-                                artifact_name=artifact_info.get("artifact_name", ""),
-                                summary=artifact_info.get("summary", ""),
-                            )
-                        except Exception as send_err:
-                            logger.warning(f"Failed to auto-sync pending approval to chat {chat_id}: {send_err}")
+                        art_path = artifact_info.get("artifact_path", "")
+                        approval_key = f"{conv_id}:{art_path}"
+                        if (
+                            approval_key not in self.handlers.handled_approvals
+                            and time.time() - self.handlers.last_approved_time.get(chat_id, 0.0) >= 4.0
+                        ):
+                            try:
+                                await self.handlers.send_pending_approval(
+                                    bot=self.app.bot,
+                                    chat_id=chat_id,
+                                    conv_id=conv_id,
+                                    artifact_path=art_path,
+                                    artifact_name=artifact_info.get("artifact_name", ""),
+                                    summary=artifact_info.get("summary", ""),
+                                )
+                            except Exception as send_err:
+                                logger.warning(f"Failed to auto-sync pending approval to chat {chat_id}: {send_err}")
 
                     elif not pending_approval and current_approval:
-                        self.handlers.pending_approvals.pop(chat_id, None)
+                        await self.handlers.cleanup_pending_approvals(chat_id)
 
                     # Initialize synced baseline step for this conversation if not set
                     if conv_id not in self.handlers.synced_max_steps:

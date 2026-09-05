@@ -56,6 +56,8 @@ class TelegramHandlers:
         self.default_workspace = default_workspace or os.getcwd()
         self.pending_questions: Dict[int, Dict[str, Any]] = {}
         self.pending_approvals: Dict[int, Dict[str, Any]] = {}
+        self.handled_approvals: Set[str] = set()
+        self.last_approved_time: Dict[int, float] = {}
         self.synced_max_steps: Dict[str, int] = {}
         self.submitting_questions: Set[int] = set()
         self.last_submitted_time: Dict[int, float] = {}
@@ -1101,6 +1103,35 @@ class TelegramHandlers:
             except Exception:
                 pass
 
+    async def cleanup_pending_approvals(self, chat_id: int) -> None:
+        """Mark active artifact approval as resolved externally and remove inline buttons."""
+        pop_pending = self.pending_approvals.pop(chat_id, None)
+        if not pop_pending:
+            return
+        conv_id = pop_pending.get("conv_id")
+        art_path = pop_pending.get("artifact_path", "")
+        if conv_id and art_path:
+            self.handled_approvals.add(f"{conv_id}:{art_path}")
+            self.last_approved_time[chat_id] = time.time()
+        editor = pop_pending.get("editor")
+        msg_id = pop_pending.get("message_id")
+        bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
+        if editor:
+            try:
+                await editor.edit(
+                    "[OK] <b>该方案已在外部终端批准或执行完成。</b>",
+                    force=True,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception:
+                pass
+        elif bot and msg_id:
+            try:
+                await bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=None)
+            except Exception:
+                pass
+
     async def _check_and_submit_all_boxes(
         self,
         chat_id: int,
@@ -1368,6 +1399,11 @@ class TelegramHandlers:
         existing_editor: Optional[ThrottledEditor] = None,
     ) -> None:
         """Send or update Telegram message with the artifact file and Proceed button."""
+        approval_key = f"{conv_id}:{artifact_path}"
+        if approval_key in self.handled_approvals:
+            logger.info(f"Skipping send_pending_approval for already handled artifact: {approval_key}")
+            return
+
         self.pending_approvals[chat_id] = {
             "conv_id": conv_id,
             "artifact_path": artifact_path,
@@ -1406,12 +1442,18 @@ class TelegramHandlers:
         if existing_editor:
             try:
                 await existing_editor.edit(text, parse_mode=ParseMode.HTML, reply_markup=markup, force=True)
+                self.pending_approvals[chat_id]["editor"] = existing_editor
+                self.pending_approvals[chat_id]["message_id"] = (
+                    existing_editor.message.message_id if existing_editor.message else None
+                )
                 return
             except Exception as exc:
                 logger.debug(f"Failed to edit existing editor with approval card: {exc}")
 
         try:
-            await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            sent_msg = await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=markup)
+            self.pending_approvals[chat_id]["message_id"] = sent_msg.message_id
+            self.pending_approvals[chat_id]["editor"] = ThrottledEditor(sent_msg, min_interval=1.0)
         except Exception as exc:
             logger.error(f"Failed to send pending approval message: {exc}")
 
@@ -1431,6 +1473,12 @@ class TelegramHandlers:
             await self._safe_answer_query(query, "[DENIED] 未授权用户，禁止操作", show_alert=True)
             return
 
+        # 1. Immediately remove reply_markup on query message so buttons disappear instantly!
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
         pending = self.pending_approvals.pop(chat_id, None)
         if not pending:
             recovered = self._try_recover_pending_approval(chat_id)
@@ -1448,6 +1496,10 @@ class TelegramHandlers:
         conv_id = pending["conv_id"]
         artifact_path = pending.get("artifact_path", "")
         artifact_name = pending.get("artifact_name", "implementation_plan.md")
+
+        # Mark as handled to prevent re-sync loop from popping up new buttons
+        self.handled_approvals.add(f"{conv_id}:{artifact_path}")
+        self.last_approved_time[chat_id] = time.time()
 
         await self._safe_answer_query(query, f"[OK] 已批准执行 {artifact_name}！")
 
@@ -1475,7 +1527,7 @@ class TelegramHandlers:
             )
         except Exception as exc:
             logger.exception("Failed to dispatch proceed message to Antigravity")
-            await editor.edit(f"[ERROR] 派发批准指令失败：`{exc}`", force=True)
+            await editor.edit(f"[ERROR] 派发批准指令失败：`{exc}`", force=True, reply_markup=None)
             return
 
         task = asyncio.create_task(
@@ -1529,12 +1581,16 @@ class TelegramHandlers:
 
             if matched_opt:
                 self.session_mgr.set_model(chat_id, matched_opt.id, display_name=matched_opt.display_name)
-                await self._safe_answer_query(query, f"[OK] 已原地切换至 #{matched_opt.code} {matched_opt.display_name}")
+                await self._safe_answer_query(query, f"[OK] 已切换至 #{matched_opt.code} {matched_opt.display_name}")
                 try:
-                    text, markup = await self._render_models_view(chat_id)
-                    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+                    await query.edit_message_text(
+                        f"[MODEL] <b>模型已切换至：</b> <code>#{matched_opt.code} {html.escape(matched_opt.display_name)}</code>\n\n"
+                        f"<i>已即时生效，后续对话将使用此模型。</i>",
+                        parse_mode=ParseMode.HTML,
+                        reply_markup=None,
+                    )
                 except Exception as exc:
-                    logger.debug(f"Failed to update models markup after selection: {exc}")
+                    logger.debug(f"Failed to update model selection: {exc}")
             else:
                 await self._safe_answer_query(query, "[ERROR] 未找到所选模型", show_alert=True)
             return
@@ -1560,18 +1616,26 @@ class TelegramHandlers:
                     self.session_mgr.set_workspace(chat_id, inferred_ws)
 
                 await self._safe_answer_query(query, f"[OK] 已成功绑定会话 {target_conv_id[:8]}...")
-                text, markup = await self._render_sessions_view(chat_id)
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+                ws_text = f"\n工作区：<code>{html.escape(inferred_ws)}</code>" if inferred_ws else ""
+                await query.edit_message_text(
+                    f"[SESSION] <b>已成功绑定会话：</b> <code>{target_conv_id[:8]}...</code>{ws_text}\n\n"
+                    f"<i>后续指令与对话将直接在此会话上下文中执行。</i>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
             except Exception as exc:
                 await self._safe_answer_query(query, f"[ERROR] 绑定失败：{exc}", show_alert=True)
             return
 
         elif data == "s_act:new":
             self.session_mgr.new_session(chat_id)
-            await self._safe_answer_query(query, "[NEW] 已开启新会话！下次发送消息将创建全新对话。")
+            await self._safe_answer_query(query, "[NEW] 已开启新会话！")
             try:
-                text, markup = await self._render_sessions_view(chat_id)
-                await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+                await query.edit_message_text(
+                    "[SESSION] <b>已开启全新会话！</b>\n\n<i>下次发送消息将在新会话中创建并执行。</i>",
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
             except Exception as exc:
                 logger.debug(f"Failed to refresh sessions after new: {exc}")
             return
@@ -1650,6 +1714,10 @@ class TelegramHandlers:
                         
                         # Immediately answer the callback query so the loading spinner stops instantly
                         await self._safe_answer_query(query, f"已选择：{opt_text}")
+                        try:
+                            await query.edit_message_reply_markup(reply_markup=None)
+                        except Exception:
+                            pass
 
                         editor = b.get("editor") or (ThrottledEditor(query.message, min_interval=1.0) if query.message else None)
                         if editor:
@@ -1722,8 +1790,12 @@ class TelegramHandlers:
                 ]
                 summary = ", ".join(chosen_texts)
 
-                # Immediately answer callback query
+                # Immediately answer callback query and wipe reply_markup
                 await self._safe_answer_query(query, "[OK] 已确认提交当前选项")
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
 
                 editor = b.get("editor") or (ThrottledEditor(query.message, min_interval=1.0) if query.message else None)
                 if editor:
@@ -1753,8 +1825,12 @@ class TelegramHandlers:
                 b["skipped"] = True
                 b["selections"] = set()
 
-                # Immediately answer callback query
+                # Immediately answer callback query and wipe reply_markup
                 await self._safe_answer_query(query, "[SKIP] 已跳过当前选项")
+                try:
+                    await query.edit_message_reply_markup(reply_markup=None)
+                except Exception:
+                    pass
 
                 editor = b.get("editor") or (ThrottledEditor(query.message, min_interval=1.0) if query.message else None)
                 if editor:
@@ -1908,10 +1984,34 @@ class TelegramHandlers:
         if chat_id not in self.pending_approvals:
             self._try_recover_pending_approval(chat_id)
 
-        actual_prompt = text
         if chat_id in self.pending_approvals:
             pending = self.pending_approvals.pop(chat_id, None)
             if pending:
+                conv_id = pending.get("conv_id")
+                art_path = pending.get("artifact_path", "")
+                if conv_id and art_path:
+                    self.handled_approvals.add(f"{conv_id}:{art_path}")
+                    self.last_approved_time[chat_id] = time.time()
+
+                editor = pending.get("editor")
+                msg_id = pending.get("message_id")
+                bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
+                if editor:
+                    try:
+                        await editor.edit(
+                            f"[PROCEED] <b>已通过文字回复方案：</b> <code>{html.escape(pending.get('artifact_name', ''))}</code>",
+                            force=True,
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                elif bot and msg_id:
+                    try:
+                        await bot.edit_message_reply_markup(chat_id=chat_id, message_id=msg_id, reply_markup=None)
+                    except Exception:
+                        pass
+
                 clean_text = text.strip().lower()
                 if clean_text in ("proceed", "同意", "批准", "执行", "通过", "ok", "yes", "好", "可以", "没问题", "行"):
                     actual_prompt = (
@@ -2304,12 +2404,16 @@ class TelegramHandlers:
                     await editor.edit(tracker.format_status_html(), parse_mode=ParseMode.HTML)
 
                 elif isinstance(event, ArtifactReviewEvent):
+                    approval_key = f"{conv_id}:{event.artifact_path}"
+                    if approval_key in self.handled_approvals:
+                        continue
                     bot = editor.message.get_bot() if editor.message else getattr(self, "bot", None)
                     self.pending_approvals[chat_id] = {
                         "conv_id": conv_id,
                         "artifact_path": event.artifact_path,
                         "artifact_name": event.artifact_name,
                         "summary": event.summary,
+                        "editor": editor,
                     }
                     if event.artifact_path and event.artifact_path not in sent_files and os.path.isfile(event.artifact_path):
                         sent_files.add(event.artifact_path)
@@ -2378,16 +2482,21 @@ class TelegramHandlers:
 
                 reply_markup = None
                 if chat_id in self.pending_approvals:
-                    reply_markup = InlineKeyboardMarkup(
-                        [
+                    app_info = self.pending_approvals[chat_id]
+                    approval_key = f"{conv_id}:{app_info.get('artifact_path', '')}"
+                    if approval_key not in self.handled_approvals:
+                        reply_markup = InlineKeyboardMarkup(
                             [
-                                InlineKeyboardButton(
-                                    "✅ Proceed (批准执行)",
-                                    callback_data=f"proceed:{conv_id[:12]}",
-                                )
+                                [
+                                    InlineKeyboardButton(
+                                        "✅ Proceed (批准执行)",
+                                        callback_data=f"proceed:{conv_id[:12]}",
+                                    )
+                                ]
                             ]
-                        ]
-                    )
+                        )
+                    else:
+                        self.pending_approvals.pop(chat_id, None)
 
                 if cleaned_response:
                     chunks = split_message(cleaned_response, max_length=4000)

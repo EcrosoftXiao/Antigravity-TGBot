@@ -79,7 +79,45 @@ def test_get_pending_artifact_approval():
         assert monitor.get_pending_artifact_approval(conv_id) is None
 
 
+def test_walkthrough_does_not_trigger_pending_approval():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv_id = "test-conv-walkthrough"
+        log_dir = Path(tmpdir) / "brain" / conv_id / ".system_generated" / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        transcript_file = log_dir / "transcript.jsonl"
+
+        monitor = TranscriptMonitor(gemini_dir=tmpdir)
+
+        # Write a walkthrough artifact
+        walkthrough_step = {
+            "step_index": 20,
+            "source": "MODEL",
+            "type": "PLANNER_RESPONSE",
+            "status": "DONE",
+            "tool_calls": [
+                {
+                    "name": "write_to_file",
+                    "args": {
+                        "TargetFile": f"{tmpdir}/brain/{conv_id}/walkthrough.md",
+                        "ArtifactMetadata": {
+                            "RequestFeedback": False,
+                            "Summary": "Walkthrough summary",
+                            "UserFacing": True,
+                        },
+                    },
+                }
+            ],
+        }
+
+        with open(transcript_file, "w", encoding="utf-8") as f:
+            f.write(json.dumps(walkthrough_step) + "\n")
+
+        # Must NOT be detected as pending approval
+        assert monitor.get_pending_artifact_approval(conv_id) is None
+
+
 if __name__ == "__main__":
     test_artifact_review_event()
     test_get_pending_artifact_approval()
+    test_walkthrough_does_not_trigger_pending_approval()
     print("ALL ARTIFACT APPROVAL TESTS PASSED!")
