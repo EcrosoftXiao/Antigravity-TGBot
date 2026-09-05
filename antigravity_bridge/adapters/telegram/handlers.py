@@ -1795,29 +1795,42 @@ class TelegramHandlers:
                         bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
                         await self._send_document_file(chat_id, path, caption=f"📦 <b>文件下载：</b> <code>{html.escape(os.path.basename(path))}</code>", bot=bot)
 
-                chunks = split_message(final_response, max_length=4000)
-                # First chunk edits the status message
-                success = await editor.edit(chunks[0], force=True)
-                if not success and reply_target_msg:
-                    try:
-                        await reply_target_msg.reply_text(
-                            chunks[0], parse_mode=ParseMode.MARKDOWN
-                        )
-                    except Exception:
-                        await reply_target_msg.reply_text(chunks[0], parse_mode=None)
+                # Clean markdown image syntax ![[caption]](path) and document links [text](path) from final_response
+                # to prevent ugly raw markdown tags showing up in Telegram
+                cleaned_response = re.sub(r"!\[(.*?)\]\((/[^\)]+\.(?:png|jpg|jpeg|webp|gif))\)", "", final_response)
+                cleaned_response = re.sub(r"\[(.*?)\]\((?:file://)?(/[^\)]+\.(?:pdf|csv|xlsx|zip|docx|tar\.gz))\)", r"\1", cleaned_response)
+                cleaned_response = re.sub(r"\n{3,}", "\n\n", cleaned_response).strip()
 
-                # Subsequent chunks sent as new messages
-                for chunk in chunks[1:]:
-                    target = reply_target_msg or editor.message
-                    if target:
+                if cleaned_response:
+                    chunks = split_message(cleaned_response, max_length=4000)
+                    # First chunk edits the status message
+                    success = await editor.edit(chunks[0], force=True)
+                    if not success and reply_target_msg:
                         try:
-                            await target.reply_text(
-                                chunk, parse_mode=ParseMode.MARKDOWN
+                            await reply_target_msg.reply_text(
+                                chunks[0], parse_mode=ParseMode.MARKDOWN
                             )
                         except Exception:
-                            await target.reply_text(chunk, parse_mode=None)
-            else:
-                await editor.edit("✅ 任务已执行完成（无文本输出内容）。", force=True)
+                            await reply_target_msg.reply_text(chunks[0], parse_mode=None)
+
+                    # Subsequent chunks sent as new messages
+                    for chunk in chunks[1:]:
+                        target = reply_target_msg or editor.message
+                        if target:
+                            try:
+                                await target.reply_text(
+                                    chunk, parse_mode=ParseMode.MARKDOWN
+                                )
+                            except Exception:
+                                await target.reply_text(chunk, parse_mode=None)
+                elif sent_files:
+                    # If all content was images/files that were already sent via send_photo/send_document, delete or complete status
+                    try:
+                        await editor.message.delete()
+                    except Exception:
+                        await editor.edit("✅ <b>图片/文件已发送。</b>", force=True, parse_mode=ParseMode.HTML)
+                else:
+                    await editor.edit("✅ 任务已执行完成（无文本输出内容）。", force=True)
 
         except asyncio.CancelledError:
             logger.info(f"Task for chat {chat_id} was cancelled by /stop")
