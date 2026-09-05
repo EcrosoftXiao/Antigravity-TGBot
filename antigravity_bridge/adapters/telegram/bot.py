@@ -154,6 +154,27 @@ class TelegramBotAdapter(BaseBotAdapter):
                         # Question was resolved externally (e.g. in IDE or Web UI)
                         await self.handlers.cleanup_pending_questions(chat_id)
 
+                    # Sync pending artifact approvals (e.g. implementation_plan.md awaiting Proceed)
+                    pending_approval = self.monitor.get_pending_artifact_approval(conv_id)
+                    current_approval = self.handlers.pending_approvals.get(chat_id)
+
+                    if pending_approval and not current_approval:
+                        step_idx, artifact_info = pending_approval
+                        try:
+                            await self.handlers.send_pending_approval(
+                                bot=self.app.bot,
+                                chat_id=chat_id,
+                                conv_id=conv_id,
+                                artifact_path=artifact_info.get("artifact_path", ""),
+                                artifact_name=artifact_info.get("artifact_name", ""),
+                                summary=artifact_info.get("summary", ""),
+                            )
+                        except Exception as send_err:
+                            logger.warning(f"Failed to auto-sync pending approval to chat {chat_id}: {send_err}")
+
+                    elif not pending_approval and current_approval:
+                        self.handlers.pending_approvals.pop(chat_id, None)
+
             except asyncio.CancelledError:
                 break
             except Exception as exc:

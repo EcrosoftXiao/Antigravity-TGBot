@@ -16,6 +16,7 @@ from telegram.ext import ContextTypes
 
 from antigravity_bridge.core.agent_cli import AgentCliBridge
 from antigravity_bridge.core.models import (
+    ArtifactReviewEvent,
     ContentEvent,
     ErrorEvent,
     ModelOption,
@@ -54,6 +55,7 @@ class TelegramHandlers:
         self.default_model = default_model
         self.default_workspace = default_workspace or os.getcwd()
         self.pending_questions: Dict[int, Dict[str, Any]] = {}
+        self.pending_approvals: Dict[int, Dict[str, Any]] = {}
         self.submitting_questions: Set[int] = set()
         self.last_submitted_time: Dict[int, float] = {}
         self.active_tasks: Dict[int, asyncio.Task] = {}
@@ -1324,6 +1326,162 @@ class TelegramHandlers:
         }
         return self.pending_questions[chat_id]
 
+    def _try_recover_pending_approval(
+        self, chat_id: int
+    ) -> Optional[Dict[str, Any]]:
+        """Attempt to restore pending artifact approval from active conversation transcript."""
+        if chat_id in self.pending_approvals:
+            return self.pending_approvals[chat_id]
+
+        session = self.session_mgr.get_session(chat_id)
+        conv_id = session.active_conversation_id
+        if not conv_id:
+            return None
+
+        pending_info = self.monitor.get_pending_artifact_approval(conv_id)
+        if not pending_info:
+            return None
+
+        step_idx, artifact_info = pending_info
+        logger.info(
+            f"Successfully recovered pending artifact approval for chat {chat_id} (step {step_idx}): {artifact_info.get('artifact_name')}"
+        )
+        self.pending_approvals[chat_id] = {
+            "conv_id": conv_id,
+            "step_index": step_idx,
+            "artifact_path": artifact_info.get("artifact_path", ""),
+            "artifact_name": artifact_info.get("artifact_name", ""),
+            "summary": artifact_info.get("summary", ""),
+            "request_feedback": artifact_info.get("request_feedback", True),
+        }
+        return self.pending_approvals[chat_id]
+
+    async def send_pending_approval(
+        self,
+        bot: Any,
+        chat_id: int,
+        conv_id: str,
+        artifact_path: str,
+        artifact_name: str,
+        summary: str = "",
+        existing_editor: Optional[ThrottledEditor] = None,
+    ) -> None:
+        """Send or update Telegram message with the artifact file and Proceed button."""
+        self.pending_approvals[chat_id] = {
+            "conv_id": conv_id,
+            "artifact_path": artifact_path,
+            "artifact_name": artifact_name,
+            "summary": summary,
+        }
+
+        # 1. Send the document file directly so user can read the full plan on mobile
+        if artifact_path and os.path.isfile(artifact_path):
+            try:
+                caption = f"[PLAN] <b>方案产物已就绪：</b> <code>{html.escape(artifact_name)}</code>"
+                await self._send_document_file(chat_id, artifact_path, caption=caption, bot=bot)
+            except Exception as exc:
+                logger.warning(f"Failed to auto-send artifact file {artifact_path}: {exc}")
+
+        # 2. Render approval card with Proceed button
+        card_lines = [
+            f"📋 [PLAN REVIEW] <b>Agent 已生成执行方案：</b> <code>{html.escape(artifact_name)}</code>"
+        ]
+        if summary:
+            card_lines.append(f"<blockquote><b>方案摘要：</b>\n{html.escape(summary)}</blockquote>")
+        card_lines.append("\n请查阅方案后点击下方按钮批准执行，或直接发送消息提出修改建议：")
+
+        markup = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ Proceed (批准执行)",
+                        callback_data=f"proceed:{conv_id[:12]}",
+                    )
+                ]
+            ]
+        )
+
+        text = "\n".join(card_lines)
+        if existing_editor:
+            try:
+                await existing_editor.edit(text, parse_mode=ParseMode.HTML, reply_markup=markup, force=True)
+                return
+            except Exception as exc:
+                logger.debug(f"Failed to edit existing editor with approval card: {exc}")
+
+        try:
+            await bot.send_message(chat_id=chat_id, text=text, parse_mode=ParseMode.HTML, reply_markup=markup)
+        except Exception as exc:
+            logger.error(f"Failed to send pending approval message: {exc}")
+
+    async def _handle_proceed_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle Proceed button clicks for approving blocked artifacts."""
+        query = update.callback_query
+        if not query:
+            return
+
+        chat_id = update.effective_chat.id
+        user_id = update.effective_user.id if update.effective_user else None
+
+        if not self.is_authorized(update):
+            logger.warning(f"Unauthorized proceed callback from user {user_id}")
+            await self._safe_answer_query(query, "[DENIED] 未授权用户，禁止操作", show_alert=True)
+            return
+
+        pending = self.pending_approvals.pop(chat_id, None)
+        if not pending:
+            recovered = self._try_recover_pending_approval(chat_id)
+            if recovered:
+                pending = self.pending_approvals.pop(chat_id, None)
+
+        if not pending:
+            await self._safe_answer_query(query, "[EXPIRED] 审批已过期或已被处理", show_alert=True)
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+            return
+
+        conv_id = pending["conv_id"]
+        artifact_path = pending.get("artifact_path", "")
+        artifact_name = pending.get("artifact_name", "implementation_plan.md")
+
+        await self._safe_answer_query(query, f"[OK] 已批准执行 {artifact_name}！")
+
+        proceed_msg = (
+            f"Comments on artifact URI: file://{artifact_path}\n\n"
+            f"The user has approved this document.\n"
+        )
+
+        try:
+            await query.edit_message_text(
+                f"[PROCEED] <b>已批准方案：</b> <code>{html.escape(artifact_name)}</code>\n\n<i>Agent 正在启动执行阶段...</i>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception as exc:
+            logger.debug(f"Failed to edit proceed message: {exc}")
+
+        editor = ThrottledEditor(query.message, min_interval=1.2)
+        start_step = self.monitor.get_current_max_step(conv_id) + 1
+
+        try:
+            await self.agent_cli.send_message(
+                conversation_id=conv_id,
+                content=proceed_msg,
+            )
+        except Exception as exc:
+            logger.exception("Failed to dispatch proceed message to Antigravity")
+            await editor.edit(f"[ERROR] 派发批准指令失败：`{exc}`", force=True)
+            return
+
+        task = asyncio.create_task(
+            self._stream_turn_events(chat_id, conv_id, editor, start_step, query.message)
+        )
+        self.active_tasks[chat_id] = task
+
     async def _safe_answer_query(
         self, query: Any, text: Optional[str] = None, show_alert: bool = False
     ) -> bool:
@@ -1424,6 +1582,10 @@ class TelegramHandlers:
                 await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
             except Exception as exc:
                 logger.debug(f"Failed to refresh sessions: {exc}")
+            return
+
+        elif data.startswith("proceed:"):
+            await self._handle_proceed_callback(update, context)
             return
 
         pending = self.pending_questions.get(chat_id)
@@ -1741,18 +1903,38 @@ class TelegramHandlers:
             if handled:
                 return
 
+        # Check if user is responding to a pending artifact approval
+        if chat_id not in self.pending_approvals:
+            self._try_recover_pending_approval(chat_id)
+
+        actual_prompt = text
+        if chat_id in self.pending_approvals:
+            pending = self.pending_approvals.pop(chat_id, None)
+            if pending:
+                clean_text = text.strip().lower()
+                if clean_text in ("proceed", "同意", "批准", "执行", "通过", "ok", "yes", "好", "可以", "没问题", "行"):
+                    actual_prompt = (
+                        f"Comments on artifact URI: file://{pending['artifact_path']}\n\n"
+                        f"The user has approved this document.\n"
+                    )
+                else:
+                    actual_prompt = (
+                        f"Comments on artifact URI: file://{pending['artifact_path']}\n\n"
+                        f"{text}\n"
+                    )
+
         session = self.session_mgr.get_session(chat_id)
 
         # Handle batch collection mode
         if session.batch_mode:
-            count = self.session_mgr.add_batch_message(chat_id, text)
+            count = self.session_mgr.add_batch_message(chat_id, actual_prompt)
             await update.effective_message.reply_text(
                 f"[BUFFER] 已暂存消息 #{count}。发送 `/send` 提交执行，或发送 `/cancel` 取消。",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
 
-        await self._dispatch_agent_prompt(update, text)
+        await self._dispatch_agent_prompt(update, actual_prompt)
 
     def _get_user_upload_dir(self, conv_id: Optional[str]) -> Path:
         """Return Antigravity native .user_uploaded artifact directory for zero-permission access."""
@@ -2059,7 +2241,7 @@ class TelegramHandlers:
             while True:
                 try:
                     await asyncio.sleep(1.2)
-                    if chat_id in self.pending_questions:
+                    if chat_id in self.pending_questions or chat_id in self.pending_approvals:
                         continue
                     status_html = tracker.format_status_html()
                     await editor.edit(status_html, parse_mode=ParseMode.HTML)
@@ -2120,6 +2302,20 @@ class TelegramHandlers:
                     )
                     await editor.edit(tracker.format_status_html(), parse_mode=ParseMode.HTML)
 
+                elif isinstance(event, ArtifactReviewEvent):
+                    bot = editor.message.get_bot() if editor.message else getattr(self, "bot", None)
+                    self.pending_approvals[chat_id] = {
+                        "conv_id": conv_id,
+                        "artifact_path": event.artifact_path,
+                        "artifact_name": event.artifact_name,
+                        "summary": event.summary,
+                    }
+                    if event.artifact_path and event.artifact_path not in sent_files and os.path.isfile(event.artifact_path):
+                        sent_files.add(event.artifact_path)
+                        caption = f"[PLAN] <b>方案产物已就绪：</b> <code>{html.escape(event.artifact_name)}</code>"
+                        if bot:
+                            await self._send_document_file(chat_id, event.artifact_path, caption=caption, bot=bot)
+
                 elif isinstance(event, ToolResultEvent):
                     self.pending_questions.pop(chat_id, None)
                     tracker.on_tool_result()
@@ -2149,6 +2345,7 @@ class TelegramHandlers:
 
                 elif isinstance(event, ErrorEvent):
                     self.pending_questions.pop(chat_id, None)
+                    self.pending_approvals.pop(chat_id, None)
                     if "Transcript log not found" in event.error_message:
                         self.session_mgr.clear_conversation(chat_id)
                     await editor.edit(f"[ERROR] *执行出错：* {event.error_message}", force=True)
@@ -2178,17 +2375,30 @@ class TelegramHandlers:
                 cleaned_response = re.sub(r"\[(.*?)\]\((?:file://)?(/[^\)]+\.(?:pdf|csv|xlsx|zip|docx|tar\.gz))\)", r"\1", cleaned_response)
                 cleaned_response = re.sub(r"\n{3,}", "\n\n", cleaned_response).strip()
 
+                reply_markup = None
+                if chat_id in self.pending_approvals:
+                    reply_markup = InlineKeyboardMarkup(
+                        [
+                            [
+                                InlineKeyboardButton(
+                                    "✅ Proceed (批准执行)",
+                                    callback_data=f"proceed:{conv_id[:12]}",
+                                )
+                            ]
+                        ]
+                    )
+
                 if cleaned_response:
                     chunks = split_message(cleaned_response, max_length=4000)
                     # First chunk edits the status message
-                    success = await editor.edit(chunks[0], force=True)
+                    success = await editor.edit(chunks[0], force=True, reply_markup=reply_markup)
                     if not success and reply_target_msg:
                         try:
                             await reply_target_msg.reply_text(
-                                chunks[0], parse_mode=ParseMode.MARKDOWN
+                                chunks[0], parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
                             )
                         except Exception:
-                            await reply_target_msg.reply_text(chunks[0], parse_mode=None)
+                            await reply_target_msg.reply_text(chunks[0], parse_mode=None, reply_markup=reply_markup)
 
                     # Subsequent chunks sent as new messages
                     for chunk in chunks[1:]:
@@ -2203,12 +2413,18 @@ class TelegramHandlers:
                 elif sent_files:
                     # If all content was images/files that were already sent via send_photo/send_document, delete or complete status
                     try:
-                        await editor.message.delete()
+                        if not reply_markup:
+                            await editor.message.delete()
+                        else:
+                            await editor.edit("[PLAN] <b>方案产物已就绪，请审核并点击下方按钮批准：</b>", force=True, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
                     except Exception:
-                        await editor.edit("[OK] <b>图片/文件已发送。</b>", force=True, parse_mode=ParseMode.HTML)
+                        await editor.edit("[OK] <b>图片/文件已发送。</b>", force=True, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
                 else:
                     elapsed_str = format_duration(time.time() - tracker.turn_start_time)
-                    await editor.edit(f"[OK] 任务已执行完成（无文本输出内容，耗时: {elapsed_str}）。", force=True)
+                    status_text = f"[OK] 任务已执行完成（无文本输出内容，耗时: {elapsed_str}）。"
+                    if reply_markup:
+                        status_text = f"[PLAN] <b>执行方案已就绪，请审核并批准：</b>"
+                    await editor.edit(status_text, force=True, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
 
         except asyncio.CancelledError:
             logger.info(f"Task for chat {chat_id} was cancelled by /stop")
@@ -2232,7 +2448,7 @@ class TelegramHandlers:
                 await ticker_task
             except asyncio.CancelledError:
                 pass
-            if chat_id not in self.pending_questions:
+            if chat_id not in self.pending_questions and chat_id not in self.pending_approvals:
                 self.active_tasks.pop(chat_id, None)
                 self.active_editors.pop(chat_id, None)
 

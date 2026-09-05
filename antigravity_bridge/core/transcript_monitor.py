@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 
 from .models import (
     AgentEvent,
+    ArtifactReviewEvent,
     ContentEvent,
     ErrorEvent,
     ThinkingEvent,
@@ -125,6 +126,88 @@ class TranscriptMonitor:
             return ask_question_step, questions
         return None
 
+    def get_pending_artifact_approval(
+        self, conversation_id: str
+    ) -> Optional[Tuple[int, Dict[str, Any]]]:
+        """Check if conversation is waiting on an unresolved artifact Proceed / feedback review.
+
+        Returns (step_index, artifact_info) if pending approval exists, otherwise None.
+        """
+        path = self.get_transcript_path(conversation_id)
+        if not path.is_file():
+            return None
+
+        lines = []
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        lines.append(line)
+        except OSError:
+            return None
+
+        if not lines:
+            return None
+
+        recent_lines = lines[-30:] if len(lines) > 30 else lines
+        artifact_step = -1
+        artifact_info: Optional[Dict[str, Any]] = None
+
+        for line in reversed(recent_lines):
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+
+            step_idx = data.get("step_index", -1)
+            step_type = data.get("type")
+
+            # If there's a USER_INPUT after the tool call, it has been responded to
+            if step_type == "USER_INPUT" and artifact_step == -1:
+                return None
+
+            if step_type == "PLANNER_RESPONSE":
+                tool_calls = data.get("tool_calls", [])
+                for tc in tool_calls:
+                    if tc.get("name") in ("write_to_file", "replace_file_content"):
+                        args = tc.get("args", {})
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except Exception:
+                                args = {}
+
+                        meta = args.get("ArtifactMetadata", {})
+                        if isinstance(meta, str):
+                            try:
+                                meta = json.loads(meta)
+                            except Exception:
+                                meta = {}
+
+                        target_file = str(args.get("TargetFile", "")).strip('"\'')
+                        req_feedback = False
+                        if isinstance(meta, dict):
+                            req_feedback = bool(meta.get("RequestFeedback") or meta.get("request_feedback"))
+
+                        file_basename = os.path.basename(target_file) if target_file else ""
+                        if req_feedback or file_basename in ("implementation_plan.md", "walkthrough.md"):
+                            summary = meta.get("Summary", "") if isinstance(meta, dict) else ""
+                            artifact_info = {
+                                "artifact_path": target_file,
+                                "artifact_name": file_basename,
+                                "summary": summary,
+                                "request_feedback": req_feedback,
+                            }
+                            artifact_step = step_idx
+                            break
+                if artifact_step != -1:
+                    break
+
+        if artifact_info and artifact_step != -1:
+            return artifact_step, artifact_info
+        return None
+
     async def stream_events(
         self,
         conversation_id: str,
@@ -227,6 +310,29 @@ class TranscriptMonitor:
                                         tool_action=action,
                                         arguments=args if isinstance(args, dict) else {},
                                     )
+
+                                    if t_name in ("write_to_file", "replace_file_content"):
+                                        meta = args.get("ArtifactMetadata", {}) if isinstance(args, dict) else {}
+                                        if isinstance(meta, str):
+                                            try:
+                                                meta = json.loads(meta)
+                                            except Exception:
+                                                meta = {}
+                                        target_file = str(args.get("TargetFile", "") if isinstance(args, dict) else "").strip('"\'')
+                                        req_feedback = False
+                                        if isinstance(meta, dict):
+                                            req_feedback = bool(meta.get("RequestFeedback") or meta.get("request_feedback"))
+                                        file_basename = os.path.basename(target_file) if target_file else ""
+                                        if req_feedback or file_basename in ("implementation_plan.md", "walkthrough.md"):
+                                            summary_text = meta.get("Summary", "") if isinstance(meta, dict) else ""
+                                            yield ArtifactReviewEvent(
+                                                step_index=step_idx,
+                                                raw_step=step_data,
+                                                artifact_path=target_file,
+                                                artifact_name=file_basename,
+                                                summary=summary_text,
+                                                request_feedback=req_feedback,
+                                            )
 
                             # 3. Content
                             content = step_data.get("content")

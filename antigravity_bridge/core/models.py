@@ -211,6 +211,14 @@ class ErrorEvent(AgentEvent):
 
 
 @dataclass
+class ArtifactReviewEvent(AgentEvent):
+    artifact_path: str = ""
+    artifact_name: str = ""
+    summary: str = ""
+    request_feedback: bool = True
+
+
+@dataclass
 class ConversationInfo:
     conversation_id: str
     created_at: str
