@@ -47,7 +47,7 @@ def test_tracker_thinking_flow():
     assert "[THINKING]" in html_out
     assert "<b>Analyzing Workspace</b>" in html_out
     assert "Examining current files." in html_out
-    assert "<blockquote>" in html_out
+    assert "<blockquote expandable>" in html_out
     assert "</blockquote>" in html_out
 
 
@@ -98,4 +98,18 @@ def test_tracker_normal_tool():
     html_out = tracker.format_status_html()
     assert "[TOOL]" in html_out
     assert "<code>run_command</code>" in html_out
-    assert "git status" in html_out
+    assert "Ran git status" in html_out
+    assert "<blockquote expandable>" in html_out
+
+
+def test_format_tool_detail():
+    from antigravity_bridge.adapters.telegram.progress_tracker import format_tool_detail
+
+    # run_command
+    assert format_tool_detail("run_command", {"CommandLine": "python3 -m py_compile test.py"}) == "Ran python3 -m py_compile test.py"
+
+    # view_file with line range
+    assert format_tool_detail("view_file", {"AbsolutePath": "/path/to/handlers.py", "StartLine": 10, "EndLine": 30}) == "Viewed handlers.py (L10-L30)"
+
+    # replace_file_content
+    assert format_tool_detail("replace_file_content", {"TargetFile": "/path/to/models.py", "Description": "Fix type hint"}) == "Edited models.py · Fix type hint"

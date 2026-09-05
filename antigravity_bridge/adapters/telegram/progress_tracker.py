@@ -31,8 +31,8 @@ def clean_arg_string(val: Any) -> str:
     return s
 
 
-def extract_thought_summary(thought: str, max_chars: int = 220) -> Tuple[Optional[str], str]:
-    """Extract a concise structured title and body summary from model chain-of-thought text.
+def extract_thought_summary(thought: str, max_chars: int = 600) -> Tuple[Optional[str], str]:
+    """Extract a structured title and fuller body summary from model chain-of-thought text.
 
     Returns:
         (title, body) where title may be None if no explicit section header exists.
@@ -53,8 +53,6 @@ def extract_thought_summary(thought: str, max_chars: int = 220) -> Tuple[Optiona
             title = raw_title.strip()
             body_candidate = text[heading_match.end() :].strip()
 
-    # Clean body candidate
-    # Remove markdown formatting like bold, backticks for preview cleanliness
     lines = [line.strip() for line in body_candidate.splitlines() if line.strip()]
     cleaned_paragraphs: List[str] = []
     for line in lines:
@@ -62,22 +60,63 @@ def extract_thought_summary(thought: str, max_chars: int = 220) -> Tuple[Optiona
             continue
         cleaned_paragraphs.append(line)
 
-    body = " ".join(cleaned_paragraphs)
-    # Remove excessive backticks or double asterisks
+    body = "\n".join(cleaned_paragraphs)
+    # Remove excessive bold / backtick marks for clean presentation
     body = re.sub(r"\*\*([^*]+)\*\*", r"\1", body)
     body = re.sub(r"`([^`]+)`", r"\1", body)
-    body = re.sub(r"\s+", " ", body).strip()
+    body = re.sub(r"[ \t]+", " ", body).strip()
 
     if len(body) > max_chars:
-        # Cut cleanly at last punctuation or space
-        truncated = body[:max_chars]
-        last_punct = max(truncated.rfind("。"), truncated.rfind("."), truncated.rfind("，"), truncated.rfind(","))
-        if last_punct > int(max_chars * 0.6):
-            body = truncated[: last_punct + 1] + ".."
-        else:
-            body = truncated.rsplit(" ", 1)[0] + "..."
+        body = body[:max_chars].rsplit(" ", 1)[0] + "..."
 
     return title, body
+
+
+def format_tool_detail(tool_name: str, args: Dict[str, Any], action: str = "", summary: str = "") -> str:
+    """Extract concise, human-friendly operational detail matching IDE display style."""
+    if not isinstance(args, dict):
+        args = {}
+
+    if tool_name == "run_command":
+        cmd = args.get("CommandLine", "")
+        if cmd:
+            first_line = cmd.strip().splitlines()[0]
+            if len(first_line) > 120:
+                first_line = first_line[:117] + "..."
+            return f"Ran {first_line}"
+    elif tool_name == "view_file":
+        path = args.get("AbsolutePath", "")
+        if path:
+            fname = path.split("/")[-1]
+            start = args.get("StartLine")
+            end = args.get("EndLine")
+            if start and end:
+                return f"Viewed {fname} (L{start}-L{end})"
+            return f"Viewed {fname}"
+    elif tool_name == "replace_file_content":
+        path = args.get("TargetFile", "")
+        desc = args.get("Description", "")
+        fname = path.split("/")[-1] if path else "file"
+        if desc:
+            return f"Edited {fname} · {desc}"
+        return f"Edited {fname}"
+    elif tool_name == "write_to_file":
+        path = args.get("TargetFile", "")
+        fname = path.split("/")[-1] if path else "file"
+        return f"Created/Wrote {fname}"
+    elif tool_name == "grep_search":
+        q = args.get("Query", "")
+        return f"Searched codebase for '{q}'"
+    elif tool_name == "find_by_name":
+        p = args.get("Pattern", "")
+        return f"Finding files matching '{p}'"
+    elif tool_name == "read_url_content":
+        url = args.get("Url", "")
+        return f"Reading URL: {url}"
+
+    # Default fallback to action or summary
+    detail = action or summary
+    return detail
 
 
 class Phase(str, Enum):
@@ -121,6 +160,7 @@ class TurnProgressTracker:
         self.current_tool_name: str = ""
         self.current_tool_action: str = ""
         self.current_tool_summary: str = ""
+        self.current_tool_detail: str = ""
 
         # Subagents state
         self.subagents: List[SubagentInfo] = []
@@ -156,6 +196,12 @@ class TurnProgressTracker:
             self.current_tool_name = tool_name
             self.current_tool_summary = clean_arg_string(tool_summary)
             self.current_tool_action = clean_arg_string(tool_action)
+            self.current_tool_detail = format_tool_detail(
+                tool_name=tool_name,
+                args=args,
+                action=self.current_tool_action,
+                summary=self.current_tool_summary,
+            )
 
     def _parse_subagents(self, args: Dict[str, Any]) -> None:
         """Parse subagents list from invoke_subagent arguments."""
@@ -224,7 +270,8 @@ class TurnProgressTracker:
             lines.append(f"[SUBAGENT] <b>派发与执行子代理任务</b> (总计: {total_elapsed})")
             if self.phase == Phase.TOOL:
                 tool_label = html.escape(self.current_tool_name or "tool")
-                lines.append(f"├── <b>主 Agent</b>：正在执行工具 <code>{tool_label}</code> ({step_elapsed})")
+                detail_preview = f" · <code>{html.escape(self.current_tool_detail)}</code>" if self.current_tool_detail else ""
+                lines.append(f"├── <b>主 Agent</b>：正在执行工具 <code>{tool_label}</code>{detail_preview} ({step_elapsed})")
             elif self.phase == Phase.THINKING:
                 lines.append(f"├── <b>主 Agent</b>：正在思考分析... ({step_elapsed})")
             elif self.phase == Phase.RESULT:
@@ -256,15 +303,15 @@ class TurnProgressTracker:
                     block_content.append(f"<b>{html.escape(self.thought_title)}</b>")
                 if self.thought_body:
                     block_content.append(html.escape(self.thought_body))
-                lines.append(f"<blockquote>{chr(10).join(block_content)}</blockquote>")
+                lines.append(f"<blockquote expandable>{chr(10).join(block_content)}</blockquote>")
 
         elif self.phase == Phase.TOOL:
             tool_name = html.escape(self.current_tool_name or "tool")
             lines.append(f"[TOOL] <b>正在执行工具：</b> <code>{tool_name}</code> (总计: {total_elapsed} · 本步: {step_elapsed})")
 
-            detail = self.current_tool_action or self.current_tool_summary
+            detail = self.current_tool_detail or self.current_tool_action or self.current_tool_summary
             if detail:
-                lines.append(f"<blockquote><b>动作：</b> {html.escape(detail)}</blockquote>")
+                lines.append(f"<blockquote expandable><b>动作：</b> <code>{html.escape(detail)}</code></blockquote>")
 
             # If there were completed subagents earlier, render them as historical summary
             if self.subagents:
