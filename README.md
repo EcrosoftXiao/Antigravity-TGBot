@@ -204,6 +204,8 @@ DEFAULT_WORKSPACE="/Users/evasi0nxiao/Antigravity-TGBot"
 | `/send` | - | 无 | 将缓冲区内所有内容合并为一个完整任务派发执行 |
 | `/cancel` | - | 无 | 退出批量模式并清空缓冲区 |
 | `/stop` | - | 无 | 停止当前正在生成的回复或正在执行的任务 |
+| `/listfile`| `/ls`, `/tree`| `[路径]` | 扫描并展示当前本地工作区的目录树结构 |
+| `/getfile` | `/get` | `<相对/绝对路径>` | 从本机下载文件并直接发送至 Telegram 聊天 |
 
 > **自由对话**：直接在聊天框发送普通文本，Bot 会自动转发至当前绑定的 Antigravity 会话执行；直接发送图片则自动触发 Agent 的视觉理解能力！
 

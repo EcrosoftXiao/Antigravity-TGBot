@@ -2272,6 +2272,63 @@ class TelegramHandlers:
             except Exception:
                 pass
 
+    async def cmd_listfile(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Display the directory tree of the workspace."""
+        if not await self._check_auth(update):
+            return
+
+        chat_id = update.effective_chat.id
+        session = self.session_mgr.get_session(chat_id)
+        current_ws = session.workspace or self.default_workspace
+        
+        args = context.args or []
+        target_dir = Path(current_ws)
+        if args:
+            sub_path = " ".join(args).strip()
+            target = Path(sub_path)
+            if not target.is_absolute():
+                target = target_dir / target
+            target_dir = target.resolve()
+            
+        if not target_dir.is_dir():
+            await update.effective_message.reply_text(f"[ERROR] 路径不存在或不是目录：`{target_dir}`", parse_mode=ParseMode.MARKDOWN)
+            return
+
+        def generate_tree(dir_path: Path, prefix: str = "", depth: int = 0, max_depth: int = 2) -> str:
+            if depth > max_depth:
+                return f"{prefix}└── ...\n"
+            
+            try:
+                # Exclude common noisy directories
+                ignore_list = {'.git', '__pycache__', 'node_modules', '.venv', 'venv', '.idea', '.vscode'}
+                items = sorted([p for p in dir_path.iterdir() if p.name not in ignore_list])
+            except PermissionError:
+                return f"{prefix}└── [Permission Denied]\n"
+                
+            tree_str = ""
+            for i, path in enumerate(items):
+                is_last = (i == len(items) - 1)
+                connector = "└── " if is_last else "├── "
+                
+                if path.is_dir():
+                    tree_str += f"{prefix}{connector}📁 {path.name}/\n"
+                    extension = "    " if is_last else "│   "
+                    tree_str += generate_tree(path, prefix + extension, depth + 1, max_depth)
+                else:
+                    tree_str += f"{prefix}{connector}📄 {path.name}\n"
+            return tree_str
+
+        status_msg = await update.effective_message.reply_text(f"[SCAN] 正在读取目录树：`{target_dir.name}/` ...", parse_mode=ParseMode.MARKDOWN)
+        
+        tree_out = f"📁 **{target_dir.name}/**\n"
+        tree_out += generate_tree(target_dir, max_depth=2)
+        
+        if len(tree_out) > 3800:
+            tree_out = tree_out[:3800] + "\n... (输出过长已截断)"
+            
+        final_msg = f"[WORKSPACE] *目录结构* (`{target_dir}`):\n```text\n{tree_out}\n```\n[*] _提示：使用 `/getfile <相对路径>` 获取文件_"
+        await status_msg.edit_text(final_msg, parse_mode=ParseMode.MARKDOWN)
+
     async def _send_image_file(
         self,
         chat_id: int,
