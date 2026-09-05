@@ -6,7 +6,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import AsyncGenerator, Dict, Optional, Set
+from typing import Any, AsyncGenerator, Dict, List, Optional, Set, Tuple
 
 from .models import (
     AgentEvent,
@@ -62,6 +62,68 @@ class TranscriptMonitor:
         except OSError:
             pass
         return max_step
+
+    def get_pending_question(
+        self, conversation_id: str
+    ) -> Optional[Tuple[int, List[Dict[str, Any]]]]:
+        """Check if the conversation is currently waiting on an unresolved ask_question prompt.
+
+        Returns (step_index, questions) if a pending question is active, otherwise None.
+        """
+        path = self.get_transcript_path(conversation_id)
+        if not path.is_file():
+            return None
+
+        lines = []
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        lines.append(line)
+        except OSError:
+            return None
+
+        if not lines:
+            return None
+
+        recent_lines = lines[-30:] if len(lines) > 30 else lines
+        ask_question_step = -1
+        questions: Optional[List[Dict[str, Any]]] = None
+
+        for line in reversed(recent_lines):
+            try:
+                data = json.loads(line)
+            except Exception:
+                continue
+
+            step_idx = data.get("step_index", -1)
+            step_type = data.get("type")
+
+            # If there's a GENERIC or USER_INPUT after the tool call, it has been answered
+            if step_type in ("GENERIC", "USER_INPUT") and ask_question_step == -1:
+                return None
+
+            if step_type == "PLANNER_RESPONSE":
+                tool_calls = data.get("tool_calls", [])
+                for tc in tool_calls:
+                    if tc.get("name") == "ask_question":
+                        ask_question_step = step_idx
+                        raw_q = tc.get("args", {}).get("questions", [])
+                        if isinstance(raw_q, str):
+                            try:
+                                questions = json.loads(raw_q)
+                            except Exception:
+                                questions = None
+                        elif isinstance(raw_q, list):
+                            questions = raw_q
+                        break
+                if ask_question_step != -1:
+                    break
+
+        if questions and ask_question_step != -1:
+            return ask_question_step, questions
+        return None
 
     async def stream_events(
         self,

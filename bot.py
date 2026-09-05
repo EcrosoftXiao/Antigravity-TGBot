@@ -23,8 +23,11 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
     level=logging.INFO,
+    force=True,
 )
+logging.getLogger("antigravity_bridge").setLevel(logging.INFO)
 logger = logging.getLogger("antigravity_bridge")
+
 
 
 def parse_args() -> argparse.Namespace:

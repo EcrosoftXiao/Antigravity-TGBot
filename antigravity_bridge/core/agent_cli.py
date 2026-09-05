@@ -380,6 +380,166 @@ class AgentCliBridge:
             logger.exception(f"Exception cancelling cascade for {conversation_id}: {exc}")
             return False
 
+    async def get_cascade_trajectory(self, conversation_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch current trajectory for a cascade from Language Server."""
+        try:
+            env = self._get_clean_env()
+            ls_addr = env.get("ANTIGRAVITY_LS_ADDRESS")
+            csrf_token = env.get("ANTIGRAVITY_CSRF_TOKEN")
+            if not ls_addr:
+                return None
+
+            if not ls_addr.startswith("http://") and not ls_addr.startswith("https://"):
+                url = f"http://{ls_addr}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+            else:
+                url = f"{ls_addr}/exa.language_server_pb.LanguageServerService/GetCascadeTrajectory"
+
+            headers = {
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+            }
+            if csrf_token:
+                headers["x-codeium-csrf-token"] = csrf_token
+
+            payload = json.dumps({"cascade_id": conversation_id}).encode("utf-8")
+            req = urllib.request.Request(url, data=payload, headers=headers, method="POST")
+            loop = asyncio.get_running_loop()
+
+            def _fetch():
+                try:
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        if resp.status == 200:
+                            return json.loads(resp.read().decode("utf-8", errors="ignore"))
+                except Exception as e:
+                    logger.debug(f"Failed to fetch cascade trajectory: {e}")
+                return None
+
+            return await loop.run_in_executor(None, _fetch)
+        except Exception as exc:
+            logger.debug(f"Exception in get_cascade_trajectory: {exc}")
+            return None
+
+    async def handle_ask_question_interaction(
+        self,
+        conversation_id: str,
+        step_index: int,
+        responses: Optional[List[Dict[str, Any]]] = None,
+        cancelled: bool = False,
+    ) -> bool:
+        """Send HandleCascadeUserInteraction RPC to Antigravity Language Server to answer an interactive question."""
+        try:
+            env = self._get_clean_env()
+            ls_addr = env.get("ANTIGRAVITY_LS_ADDRESS")
+            csrf_token = env.get("ANTIGRAVITY_CSRF_TOKEN")
+            if not ls_addr:
+                logger.warning("Cannot handle user interaction: ANTIGRAVITY_LS_ADDRESS not detected.")
+                return False
+
+            if not ls_addr.startswith("http://") and not ls_addr.startswith("https://"):
+                url = f"http://{ls_addr}/exa.language_server_pb.LanguageServerService/HandleCascadeUserInteraction"
+            else:
+                url = f"{ls_addr}/exa.language_server_pb.LanguageServerService/HandleCascadeUserInteraction"
+
+            headers = {
+                "Content-Type": "application/json",
+                "Connect-Protocol-Version": "1",
+            }
+            if csrf_token:
+                headers["x-codeium-csrf-token"] = csrf_token
+
+            # 1. Dynamically discover the active trajectory_id and step_index from Language Server
+            target_trajectory_id: Optional[str] = None
+            target_step_index: Optional[int] = None
+
+            traj_data = await self.get_cascade_trajectory(conversation_id)
+            if traj_data and "trajectory" in traj_data:
+                traj = traj_data["trajectory"]
+                target_trajectory_id = traj.get("trajectoryId")
+                steps = traj.get("steps", [])
+                for s in reversed(steps):
+                    if s.get("type") in ("CORTEX_STEP_TYPE_ASK_QUESTION", 3) or "askQuestion" in s:
+                        s_info = s.get("metadata", {}).get("sourceTrajectoryStepInfo", {}) if s.get("metadata") else {}
+                        step_idx_val = (s_info.get("stepIndex") if s_info else None) or s.get("stepIndex")
+                        if step_idx_val is not None:
+                            target_step_index = step_idx_val
+                            target_trajectory_id = (s_info.get("trajectoryId") if s_info else None) or traj.get("trajectoryId") or target_trajectory_id
+                            if s.get("status") != "CORTEX_STEP_STATUS_DONE":
+                                break
+
+            candidate_trajs: List[str] = []
+            if target_trajectory_id:
+                candidate_trajs.append(target_trajectory_id)
+            if conversation_id not in candidate_trajs:
+                candidate_trajs.append(conversation_id)
+
+            candidate_steps: List[int] = []
+            if target_step_index is not None:
+                candidate_steps.append(target_step_index)
+            # Typically ask_question tool step is step_index + 1 if step_index is the PLANNER_RESPONSE
+            if step_index >= 0:
+                if (step_index + 1) not in candidate_steps:
+                    candidate_steps.append(step_index + 1)
+                if step_index not in candidate_steps:
+                    candidate_steps.append(step_index)
+            if 0 not in candidate_steps:
+                candidate_steps.append(0)
+
+            logger.info(
+                f"handle_ask_question_interaction: targeting conv {conversation_id[:8]} "
+                f"with candidate trajs: {candidate_trajs}, candidate steps: {candidate_steps}"
+            )
+
+            loop = asyncio.get_running_loop()
+
+            for t_id in candidate_trajs:
+                for s_idx in candidate_steps:
+                    interaction_payload: Dict[str, Any] = {
+                        "trajectory_id": t_id,
+                        "step_index": s_idx,
+                        "ask_question": {
+                            "cancelled": cancelled,
+                        },
+                    }
+                    if responses is not None:
+                        interaction_payload["ask_question"]["responses"] = responses
+
+                    payload_data = json.dumps({
+                        "cascade_id": conversation_id,
+                        "interaction": interaction_payload,
+                    }).encode("utf-8")
+
+                    req = urllib.request.Request(url, data=payload_data, headers=headers, method="POST")
+
+                    def _send_rpc(req=req, t_id=t_id, s_idx=s_idx) -> Tuple[bool, Optional[str]]:
+                        try:
+                            with urllib.request.urlopen(req, timeout=5) as resp:
+                                body = resp.read().decode("utf-8", errors="ignore")
+                                logger.info(
+                                    f"HandleCascadeUserInteraction success ({resp.status}) for conv {conversation_id[:8]} "
+                                    f"(traj {t_id[:8]}, step {s_idx})"
+                                )
+                                return (resp.status in (200, 204), None)
+                        except urllib.error.HTTPError as he:
+                            body = he.read().decode("utf-8", errors="ignore")
+                            return (False, body)
+                        except Exception as exc:
+                            return (False, str(exc))
+
+                    success, err_msg = await loop.run_in_executor(None, _send_rpc)
+                    if success:
+                        return True
+                    else:
+                        logger.debug(
+                            f"HandleCascadeUserInteraction failed for traj {t_id[:8]} step {s_idx}: {err_msg}"
+                        )
+                        if err_msg and "input not registered for step" not in err_msg:
+                            logger.warning(f"HandleCascadeUserInteraction error: {err_msg}")
+
+            return False
+        except Exception as exc:
+            logger.exception(f"Exception in handle_ask_question_interaction for {conversation_id}: {exc}")
+            return False
+
     async def get_metadata(self, conversation_id: str) -> Dict[str, Any]:
         """Fetch metadata for a conversation."""
         args = ["get-conversation-metadata", conversation_id]

@@ -1,16 +1,20 @@
-"""Telegram Bot Adapter implementation using python-telegram-bot."""
-
+import asyncio
 import logging
+import time
 from typing import Any, Optional, Set
-from telegram import BotCommand
+from telegram import BotCommand, Update
+from telegram.constants import ParseMode
+from telegram.error import BadRequest
 from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
     CommandHandler,
+    ContextTypes,
     MessageHandler,
     filters,
 )
+
 
 from antigravity_bridge.adapters.base import BaseBotAdapter
 from antigravity_bridge.core.agent_cli import AgentCliBridge
@@ -45,10 +49,27 @@ class TelegramBotAdapter(BaseBotAdapter):
             default_workspace=default_workspace,
         )
         self.app: Optional[Application] = None
+        self.running: bool = False
+        self._sync_task: Optional[asyncio.Task] = None
 
     def build_application(self) -> Application:
         """Create and configure the Telegram application."""
-        app = ApplicationBuilder().token(self.token).build()
+        app = (
+            ApplicationBuilder()
+            .token(self.token)
+            .concurrent_updates(True)
+            .build()
+        )
+
+        # Global error handler to prevent crashing on stale callback queries
+        async def _error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+            err = context.error
+            err_str = str(err).lower()
+            if "query is too old" in err_str or "message is not modified" in err_str:
+                return
+            logger.warning(f"Telegram handler exception: {err}")
+
+        app.add_error_handler(_error_handler)
 
         # Command handlers
         app.add_handler(CommandHandler(["start"], self.handlers.cmd_start))
@@ -74,10 +95,57 @@ class TelegramBotAdapter(BaseBotAdapter):
         # Callback query handler for inline buttons
         app.add_handler(CallbackQueryHandler(self.handlers.handle_callback_query))
 
+        self.handlers.bot = app.bot
         return app
+
+    async def _sync_questions_loop(self) -> None:
+        """Continuously synchronize pending ask_question prompts between Antigravity and Telegram."""
+        while self.running:
+            try:
+                await asyncio.sleep(1.0)
+                if not self.app or not self.app.bot:
+                    continue
+
+                for chat_id, session in list(self.session_mgr.sessions.items()):
+                    conv_id = session.active_conversation_id
+                    if not conv_id:
+                        continue
+
+                    # Don't re-sync if a submission is currently in flight or was just made
+                    if chat_id in self.handlers.submitting_questions:
+                        continue
+                    if time.time() - self.handlers.last_submitted_time.get(chat_id, 0.0) < 4.0:
+                        continue
+
+                    pending_info = self.monitor.get_pending_question(conv_id)
+                    current_pending = self.handlers.pending_questions.get(chat_id)
+
+                    if pending_info and not current_pending:
+                        # New question waiting in Antigravity (e.g. from Web UI or external turn)
+                        step_idx, questions = pending_info
+                        try:
+                            await self.handlers.send_pending_questions(
+                                bot=self.app.bot,
+                                chat_id=chat_id,
+                                conv_id=conv_id,
+                                step_index=step_idx,
+                                questions=questions,
+                            )
+                        except Exception as send_err:
+                            logger.warning(f"Failed to auto-sync pending questions to chat {chat_id}: {send_err}")
+
+                    elif not pending_info and current_pending:
+                        # Question was resolved externally (e.g. in IDE or Web UI)
+                        await self.handlers.cleanup_pending_questions(chat_id)
+
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.debug(f"Question sync loop exception: {exc}")
 
     async def start(self) -> None:
         """Start receiving Telegram updates via long polling."""
+        self.running = True
         self.app = self.build_application()
         logger.info("Initializing Telegram Bot Adapter...")
         await self.app.initialize()
@@ -106,10 +174,17 @@ class TelegramBotAdapter(BaseBotAdapter):
 
         await self.app.start()
         logger.info("Starting Telegram update polling...")
-        await self.app.updater.start_polling(drop_pending_updates=True)
+        await self.app.updater.start_polling(drop_pending_updates=False)
+
+        # Start question synchronizer task
+        self._sync_task = asyncio.create_task(self._sync_questions_loop())
 
     async def stop(self) -> None:
         """Gracefully stop updater and application."""
+        self.running = False
+        if self._sync_task and not self._sync_task.done():
+            self._sync_task.cancel()
+
         if self.app:
             logger.info("Stopping Telegram Bot Adapter...")
             if self.app.updater and self.app.updater.running:
@@ -124,3 +199,4 @@ class TelegramBotAdapter(BaseBotAdapter):
         if self.app and self.app.bot:
             return await self.app.bot.send_message(chat_id=recipient_id, text=text, **kwargs)
         raise RuntimeError("Telegram application is not initialized or running.")
+

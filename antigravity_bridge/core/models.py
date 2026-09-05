@@ -190,6 +190,10 @@ class SessionState:
     batch_mode: bool = False
     batch_buffer: List[str] = field(default_factory=list)
 
+    @property
+    def conversation_id(self) -> Optional[str]:
+        return self.active_conversation_id
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "chat_id": self.chat_id,
