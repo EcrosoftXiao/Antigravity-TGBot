@@ -74,9 +74,9 @@ class TelegramHandlers:
         if not self.is_authorized(update):
             if update.effective_message:
                 await update.effective_message.reply_text(
-                    "⛔ *访问被拒绝*：您尚未被授权控制此 Antigravity 本地代理。\n"
+                    "[DENIED] *访问被拒绝*：您尚未被授权控制此 Antigravity 本地代理。\n"
                     f"您的 Telegram 用户 ID 为：`{update.effective_user.id}`\n\n"
-                    "💡 若需授权，请在服务端的 `.env` 文件中将此 ID 添加到 `ALLOWED_USERS` 配置项中。",
+                    "[*] 若需授权，请在服务端的 `.env` 文件中将此 ID 添加到 `ALLOWED_USERS` 配置项中。",
                     parse_mode=ParseMode.MARKDOWN,
                 )
             return False
@@ -97,10 +97,10 @@ class TelegramHandlers:
             self.session_mgr.save()
 
         welcome_text = (
-            "🛸 *欢迎使用 Antigravity 远程遥控器*\n\n"
+            "[ANTIGRAVITY] *远程遥控终端*\n\n"
             "本机器人直接桥接至你本机运行的 **Antigravity Agent** 核心环境。\n"
             "无需配置云端 API Key — 所有操作均通过你本机的原生 Agent 执行！\n\n"
-            "📌 *常用快捷指令*：\n"
+            "[COMMANDS] *常用快捷指令*：\n"
             "• `/new` — 开启新的本地会话\n"
             "• `/sessions` — 列出本地历史会话\n"
             "• `/session <ID>` — 绑定当前聊天至指定会话\n"
@@ -110,7 +110,7 @@ class TelegramHandlers:
             "• `/workspace <路径>` — 查看或切换本地工程工作区目录\n"
             "• `/batch` — 开启批量消息暂存模式\n"
             "• `/help` — 查看完整的机器人指令手册\n\n"
-            "💡 *提示：直接发送任意文本即可与你的本地 Antigravity Agent 对话！*"
+            "[*] *提示：直接发送任意文本即可与你的本地 Antigravity Agent 对话！*"
         )
         await update.effective_message.reply_text(welcome_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -119,27 +119,27 @@ class TelegramHandlers:
             return
 
         help_text = (
-            "🛠 *Antigravity 远程遥控指令手册*（对标 dsh-im）：\n\n"
-            "🚀 *会话管理*\n"
+            "[MANUAL] *Antigravity 远程遥控指令手册*（对标 dsh-im）：\n\n"
+            "[SESSION] *会话管理*\n"
             "• `/new` : 开启全新会话（重置会话绑定，下次发送消息将在新会话中执行）\n"
             "• `/new <序号|模型名称>` : 切换模型并开启全新会话\n"
             "• `/session <ID>` (或 `/s`) : 绑定当前聊天至指定的已有会话\n"
             "• `/sessions` (或 `/list`) : 列出本地最近的 Antigravity 会话列表\n"
             "• `/history [条数]` : 查看当前活动会话最近的历史交互记录\n"
             "• `/status` : 查看当前会话、模型级别、工作区与运行状态\n\n"
-            "🧠 *模型与工作区*\n"
+            "[CONFIG] *模型与工作区*\n"
             "• `/models` : 查看所有支持的模型列表与对应序号\n"
             "• `/model` : 查看当前正在使用的模型信息\n"
             "• `/model <序号|名称>` : 按序号（如 `/model 1`）或名称（如 `/model sonnet`）切换模型\n"
             "• `/workspace` (或 `/ws`) : 查看当前操作的本地工程目录\n"
             "• `/workspace <路径>` : 切换本地工程工作区绝对路径\n\n"
-            "📦 *批量任务提交*\n"
+            "[BATCH] *批量任务提交*\n"
             "• `/batch` : 进入批量模式，后续输入的消息将暂存入缓冲区\n"
             "• `/send` : 一次性将缓冲区内所有消息合并提交给 Agent 执行\n"
             "• `/cancel` : 清空缓冲区并退出批量模式\n\n"
-            "🛑 *任务控制*\n"
+            "[CONTROL] *任务控制*\n"
             "• `/stop` : 中断或请求停止当前正在执行的任务\n\n"
-            "📁 *文件与图片交互*\n"
+            "[IO] *文件与图片交互*\n"
             "• `/getfile <路径>` (或 `/get`) : 获取并下载工作区或指定路径的文件\n"
             "• 直接发送照片/截图：Bot 自动保存并派发给 Agent 查看与分析\n"
             "• 直接发送文件/文档：Bot 自动保存并派发给 Agent 解析\n"
@@ -173,10 +173,10 @@ class TelegramHandlers:
         current_ws = session.workspace or self.default_workspace
 
         reply = (
-            f"✨ *已就绪！下次发送消息将开启全新会话*\n\n"
+            f"[NEW] *已就绪！下次发送消息将开启全新会话*\n\n"
             f"• *当前使用模型*：*{model_display}*\n"
             f"• *当前工程工作区*：`{current_ws}`\n\n"
-            f"💡 请直接发送你的指令或问题，Agent 将在此工作区中创建全新会话并开始工作。"
+            f"[*] 请直接发送你的指令或问题，Agent 将在此工作区中创建全新会话并开始工作。"
         )
         await update.effective_message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
 
@@ -219,7 +219,7 @@ class TelegramHandlers:
                 target_title = chosen.title
             else:
                 await update.effective_message.reply_text(
-                    f"⚠️ 序号 #{clean_num} 超出范围：当前本地记录共有 {len(convs)} 个会话（请输入 1 ~ {len(convs)}）。\n"
+                    f"[WARN] 序号 #{clean_num} 超出范围：当前本地记录共有 {len(convs)} 个会话（请输入 1 ~ {len(convs)}）。\n"
                     f"请先发送 /sessions 查看列表。",
                     parse_mode=None,
                 )
@@ -234,7 +234,7 @@ class TelegramHandlers:
             elif len(matches) > 1:
                 matched_lines = "\n".join([f"• <code>{html.escape(c.conversation_id[:8])}</code> ({html.escape(c.title)})" for c in matches[:5]])
                 await update.effective_message.reply_text(
-                    f"⚠️ 匹配到多个以 <code>{html.escape(target_arg)}</code> 开头的会话：\n{matched_lines}\n请提供更多字符以精确定位。",
+                    f"[WARN] 匹配到多个以 <code>{html.escape(target_arg)}</code> 开头的会话：\n{matched_lines}\n请提供更多字符以精确定位。",
                     parse_mode=ParseMode.HTML,
                 )
                 return
@@ -250,14 +250,14 @@ class TelegramHandlers:
 
             self.session_mgr.bind_conversation(chat_id, target_id)
             clean_t = re.sub(r"\s+", " ", target_title).strip()
-            title_desc = f"\n💬 <i>{html.escape(clean_t)}</i>" if clean_t else ""
+            title_desc = f"\n> <i>{html.escape(clean_t)}</i>" if clean_t else ""
             await update.effective_message.reply_text(
-                f"🔗 <b>已成功绑定到会话：</b>\n<code>{html.escape(target_id)}</code>{title_desc}",
+                f"[OK] <b>已成功绑定到会话：</b>\n<code>{html.escape(target_id)}</code>{title_desc}",
                 parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
             await update.effective_message.reply_text(
-                f"❌ 绑定会话失败：未找到该会话记录或会话已失效。\n{exc}",
+                f"[ERROR] 绑定会话失败：未找到该会话记录或会话已失效。\n{exc}",
                 parse_mode=None,
             )
 
@@ -269,7 +269,7 @@ class TelegramHandlers:
         if context.args and context.args[0].isdigit():
             limit = min(int(context.args[0]), 30)
 
-        status_msg = await update.effective_message.reply_text("🔍 正在扫描本地 Antigravity 会话记录...")
+        status_msg = await update.effective_message.reply_text("[SCAN] 正在扫描本地 Antigravity 会话记录...")
         try:
             convs = await self.agent_cli.list_conversations(limit=limit)
             if not convs:
@@ -279,9 +279,9 @@ class TelegramHandlers:
             chat_id = update.effective_chat.id
             active_id = self.session_mgr.get_session(chat_id).active_conversation_id
 
-            lines = ["📋 <b>最近的 Antigravity 本地会话列表：</b>\n"]
+            lines = ["[SESSIONS] <b>最近的 Antigravity 本地会话列表：</b>\n"]
             for i, c in enumerate(convs, 1):
-                marker = "⭐ " if c.conversation_id == active_id else "• "
+                marker = "[ACTIVE] " if c.conversation_id == active_id else "• "
                 time_str = c.created_at.replace("T", " ")[:19] if c.created_at else ""
                 clean_title = re.sub(r"\s+", " ", c.title).strip()
                 if len(clean_title) > 60:
@@ -292,10 +292,10 @@ class TelegramHandlers:
 
                 lines.append(
                     f"{marker}<b>#{i}</b> <code>{escaped_id}</code>\n"
-                    f"   🕒 <i>{escaped_time}</i> | 💬 {escaped_title}\n"
+                    f"   <i>[{escaped_time}]</i> | {escaped_title}\n"
                 )
 
-            lines.append("💡 发送 <code>/session &lt;序号&gt;</code>（如 <code>/session 1</code>）或 <code>/session &lt;会话ID&gt;</code> 即可快速绑定。")
+            lines.append("[*] 发送 <code>/session &lt;序号&gt;</code>（如 <code>/session 1</code>）或 <code>/session &lt;会话ID&gt;</code> 即可快速绑定。")
             msg_text = "\n".join(lines)
             try:
                 await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML)
@@ -304,7 +304,7 @@ class TelegramHandlers:
                 await status_msg.edit_text(plain_text, parse_mode=None)
         except Exception as exc:
             logger.exception("Error listing sessions")
-            await status_msg.edit_text(f"❌ 获取会话列表失败：{exc}", parse_mode=None)
+            await status_msg.edit_text(f"[ERROR] 获取会话列表失败：{exc}", parse_mode=None)
 
     # ------------------------------------------------------------------
     # Command: /history [limit or session_id] [limit]
@@ -356,7 +356,7 @@ class TelegramHandlers:
 
         if not target_conv_id:
             await update.effective_message.reply_text(
-                "❌ 当前未绑定任何活动会话。\n"
+                "[WARN] 当前未绑定任何活动会话。\n"
                 "• 发送 `/sessions` 可查看并绑定历史会话\n"
                 "• 发送 `/history <序号>`（如 `/history 1`）可直接查看指定会话历史\n"
                 "• 或直接发送任意文本开启全新会话",
@@ -365,7 +365,7 @@ class TelegramHandlers:
             return
 
         status_msg = await update.effective_message.reply_text(
-            f"🔍 正在读取会话 <code>{html.escape(target_conv_id[:8])}...</code> 历史记录...",
+            f"[READ] 正在读取会话 <code>{html.escape(target_conv_id[:8])}...</code> 历史记录...",
             parse_mode=ParseMode.HTML,
         )
 
@@ -373,13 +373,13 @@ class TelegramHandlers:
             history = await self.agent_cli.get_conversation_history(target_conv_id, limit=limit)
             if not history:
                 await status_msg.edit_text(
-                    f"ℹ️ 会话 <code>{html.escape(target_conv_id)}</code> 暂无交互记录（或尚未生成有效回复）。",
+                    f"[INFO] 会话 <code>{html.escape(target_conv_id)}</code> 暂无交互记录（或尚未生成有效回复）。",
                     parse_mode=ParseMode.HTML,
                 )
                 return
 
             lines = [
-                f"📜 <b>会话历史交互记录</b> (<code>{html.escape(target_conv_id[:8])}...</code>，最近 {len(history)} 轮)：\n"
+                f"[HISTORY] <b>会话历史交互记录</b> (<code>{html.escape(target_conv_id[:8])}...</code>，最近 {len(history)} 轮)：\n"
             ]
 
             for i, (user_req, agent_resp) in enumerate(history, 1):
@@ -399,14 +399,14 @@ class TelegramHandlers:
                 r_trunc_tag = f" <i>(共 {orig_resp_len} 字，已截断)</i>" if is_r_trunc else ""
 
                 lines.append(
-                    f"<b>#{i} 👤 用户</b>{u_trunc_tag}：\n"
+                    f"<b>#{i} [USER]</b>{u_trunc_tag}：\n"
                     f"{html.escape(clean_user)}\n\n"
-                    f"<b>🤖 Agent</b>{r_trunc_tag}：\n"
+                    f"<b>[AGENT]</b>{r_trunc_tag}：\n"
                     f"{html.escape(clean_resp)}\n"
                     f"────────────────────"
                 )
 
-            lines.append("💡 <i>提示：长对话内容已自动截断以保证清晰展示。发送 /history &lt;条数&gt;（如 /history 5）可查看更多轮次。</i>")
+            lines.append("[*] <i>提示：长对话内容已自动截断以保证清晰展示。发送 /history &lt;条数&gt;（如 /history 5）可查看更多轮次。</i>")
             msg_text = "\n".join(lines)
 
             # Cap message text to fit within Telegram limits
@@ -422,7 +422,7 @@ class TelegramHandlers:
 
         except Exception as exc:
             logger.exception("Failed to fetch conversation history")
-            await status_msg.edit_text(f"❌ 读取会话历史记录失败：{exc}", parse_mode=None)
+            await status_msg.edit_text(f"[ERROR] 读取会话历史记录失败：{exc}", parse_mode=None)
 
     # ------------------------------------------------------------------
     # Command: /status
@@ -442,7 +442,7 @@ class TelegramHandlers:
         opt = get_model_by_identifier(session.model or self.default_model)
         model_display = f"#{opt.index} {opt.display_name} [{opt.badge}]" if opt else (session.model or self.default_model)
         text = (
-            "📊 *Antigravity 远程遥控桥接状态*\n\n"
+            "[STATUS] *Antigravity 远程遥控桥接状态*\n\n"
             f"• *当前活动会话*：`{conv_id}`\n"
             f"• *当前使用模型*：*{model_display}*\n"
             f"• *本地工程目录*：`{ws}`\n"
@@ -462,10 +462,10 @@ class TelegramHandlers:
         session = self.session_mgr.get_session(chat_id)
         current_model = session.model or self.default_model
 
-        lines = ["🧠 *Antigravity Models (当前支持的所有模型):*\n"]
+        lines = ["[MODELS] *Antigravity Models (当前支持的所有模型):*\n"]
         for opt in AVAILABLE_MODELS:
             is_selected = (opt.id == current_model or opt.tier == current_model or str(opt.index) == current_model)
-            prefix = "⭐ " if is_selected else "• "
+            prefix = "[ACTIVE] " if is_selected else "• "
             selected_tag = " *(当前已选中)*" if is_selected else ""
             lines.append(
                 f"{prefix}*#{opt.index}* `{opt.id}` — *{opt.display_name}* `[{opt.badge}]`{selected_tag}\n"
@@ -474,7 +474,7 @@ class TelegramHandlers:
 
         lines.append("━━━━━━━━━━━━━━━━━━━━━━")
         lines.append(
-            "💡 *选择模型指令:*\n"
+            "[*] *选择模型指令:*\n"
             "• *按序号选择*：发送 `/model 1` 到 `/model 7`\n"
             "• *按名称选择*：发送 `/model sonnet`、`/model 3.8` 等"
         )
@@ -498,7 +498,7 @@ class TelegramHandlers:
         if not matched_opt:
             valid_list = ", ".join([f"`{m.index}` ({m.display_name})" for m in AVAILABLE_MODELS])
             await update.effective_message.reply_text(
-                f"❌ 未知模型或序号: `{target_arg}`\n\n"
+                f"[ERROR] 未知模型或序号: `{target_arg}`\n\n"
                 f"可选序号范围: 1 ~ {len(AVAILABLE_MODELS)} ({valid_list})\n"
                 "发送 `/models` 查看完整的模型列表与说明。",
                 parse_mode=ParseMode.MARKDOWN,
@@ -507,12 +507,12 @@ class TelegramHandlers:
 
         self.session_mgr.set_model(chat_id, matched_opt.id)
         reply = (
-            f"✅ *已成功切换模型！*\n\n"
+            f"[OK] *已成功切换模型！*\n\n"
             f"• *序号*：`#{matched_opt.index}`\n"
             f"• *模型*：*{matched_opt.display_name}*\n"
             f"• *规格*：`{matched_opt.badge}` (映射底座：`{matched_opt.tier}`)\n"
             f"• *说明*：_{matched_opt.description}_\n\n"
-            f"💡 新建会话（`/new`）将使用此模型进行驱动。"
+            f"[*] 新建会话（`/new`）将使用此模型进行驱动。"
         )
         await update.effective_message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
 
@@ -530,9 +530,9 @@ class TelegramHandlers:
             current = session.workspace or self.default_workspace
             active_conv = session.active_conversation_id or "_(暂无活动会话)_"
             await update.effective_message.reply_text(
-                f"📂 *当前本地工程工作区*：`{current}`\n"
-                f"🔗 *当前活动会话*：`{active_conv}`\n\n"
-                "💡 *用法说明*：发送 `/workspace <本地绝对路径>` 可切换至其他工程目录。切换后发送消息将在新工作区开启新会话。",
+                f"[WORKSPACE] *当前本地工程工作区*：`{current}`\n"
+                f"• *当前活动会话*：`{active_conv}`\n\n"
+                "[*] *用法说明*：发送 `/workspace <本地绝对路径>` 可切换至其他工程目录。切换后发送消息将在新工作区开启新会话。",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -542,7 +542,7 @@ class TelegramHandlers:
 
         if not os.path.isdir(target_path):
             await update.effective_message.reply_text(
-                f"❌ 目录不存在：`{target_path}`",
+                f"[ERROR] 目录不存在：`{target_path}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -552,10 +552,10 @@ class TelegramHandlers:
         self.session_mgr.clear_conversation(chat_id)
 
         reply = (
-            f"📂 *本地工程工作区已切换！*\n\n"
+            f"[WORKSPACE] *本地工程工作区已切换！*\n\n"
             f"• *当前工程工作区*：`{target_path}`\n"
             f"• *会话状态*：已就绪（旧会话已解绑）\n\n"
-            f"💡 请直接发送你的指令或问题，Agent 将在此工作区中创建全新会话并开始工作。"
+            f"[*] 请直接发送你的指令或问题，Agent 将在此工作区中创建全新会话并开始工作。"
         )
         await update.effective_message.reply_text(reply, parse_mode=ParseMode.MARKDOWN)
 
@@ -569,7 +569,7 @@ class TelegramHandlers:
         chat_id = update.effective_chat.id
         self.session_mgr.start_batch_mode(chat_id)
         await update.effective_message.reply_text(
-            "📦 *批量暂存模式已开启！*\n\n"
+            "[BATCH] *批量暂存模式已开启！*\n\n"
             "接下来发送的所有消息都会先存入暂存区。\n"
             "准备好后，发送 `/send` 即可合并为一条任务派发给 Agent，或发送 `/cancel` 取消并退出。",
             parse_mode=ParseMode.MARKDOWN,
@@ -584,7 +584,7 @@ class TelegramHandlers:
 
         if not session.batch_mode or not session.batch_buffer:
             await update.effective_message.reply_text(
-                "⚠️ 批量暂存区为空。请先发送要暂存的内容或使用 `/batch`。",
+                "[WARN] 批量暂存区为空。请先发送要暂存的内容或使用 `/batch`。",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -593,7 +593,7 @@ class TelegramHandlers:
         combined_prompt = "\n\n".join(buffered_messages)
 
         await update.effective_message.reply_text(
-            f"🚀 正在将暂存的 {len(buffered_messages)} 条消息合并为单一任务派发给 Agent...",
+            f"[DISPATCH] 正在将暂存的 {len(buffered_messages)} 条消息合并为单一任务派发给 Agent...",
             parse_mode=ParseMode.MARKDOWN,
         )
         await self._dispatch_agent_prompt(update, combined_prompt)
@@ -606,7 +606,7 @@ class TelegramHandlers:
         self.pending_questions.pop(chat_id, None)
         count = self.session_mgr.cancel_batch_mode(chat_id)
         await update.effective_message.reply_text(
-            f"🚫 批量模式已取消，已清空并丢弃 {count} 条暂存消息。",
+            f"[CANCEL] 批量模式已取消，已清空并丢弃 {count} 条暂存消息。",
             parse_mode=ParseMode.MARKDOWN,
         )
 
@@ -638,7 +638,7 @@ class TelegramHandlers:
         if active_editor:
             try:
                 await active_editor.edit(
-                    "🛑 <b>任务已手动中断停止。</b>",
+                    "[STOP] <b>任务已手动中断停止。</b>",
                     force=True,
                     parse_mode=ParseMode.HTML,
                     reply_markup=None,
@@ -649,12 +649,12 @@ class TelegramHandlers:
         # 6. Inform user
         if running_task or rpc_cancelled:
             await update.effective_message.reply_text(
-                "🛑 *已成功停止会话任务*：已向本地 Antigravity Agent 发送中断信号，并终止了当前回复流。",
+                "[STOP] *已成功停止会话任务*：已向本地 Antigravity Agent 发送中断信号，并终止了当前回复流。",
                 parse_mode=ParseMode.MARKDOWN,
             )
         else:
             await update.effective_message.reply_text(
-                "ℹ️ 当前没有正在执行的 Agent 任务，会话处于空闲状态。",
+                "[INFO] 当前没有正在执行的 Agent 任务，会话处于空闲状态。",
                 parse_mode=ParseMode.MARKDOWN,
             )
 
@@ -682,26 +682,26 @@ class TelegramHandlers:
         lines: List[str] = []
         if total_q > 1:
             type_str = "多选" if is_multi else "单选"
-            lines.append(f"❓ <b>选项 ({q_idx+1}/{total_q})：{html.escape(q_text)}</b> <i>({type_str})</i>\n")
+            lines.append(f"[QUESTION] <b>选项 ({q_idx+1}/{total_q})：{html.escape(q_text)}</b> <i>({type_str})</i>\n")
         else:
             type_str = "多选" if is_multi else "单选"
-            lines.append(f"❓ <b>{html.escape(q_text)}</b> <i>({type_str})</i>\n")
+            lines.append(f"[QUESTION] <b>{html.escape(q_text)}</b> <i>({type_str})</i>\n")
 
         for o_idx, opt in enumerate(opts):
             opt_num = o_idx + 1
             opt_display = opt.strip() if isinstance(opt, str) else str(opt.get("text", "")).strip()
             is_chosen = o_idx in chosen_set
             if is_multi:
-                icon = "✅" if is_chosen else "⬜"
+                icon = "[X]" if is_chosen else "[ ]"
             else:
-                icon = "🔘"
+                icon = "( )"
             lines.append(f"   {icon} <b>{opt_num}.</b> {html.escape(opt_display)}")
 
         lines.append("")
         if is_multi:
-            lines.append("💡 <i>点击选项切换勾选后点击【确认】，或直接输入序号（如 1, 2）：</i>")
+            lines.append("[*] <i>点击选项切换勾选后点击【确认】，或直接输入序号（如 1, 2）：</i>")
         else:
-            lines.append("💡 <i>点击下方按钮直接选择，或在聊天框发送序号（如 1）：</i>")
+            lines.append("[*] <i>点击下方按钮直接选择，或在聊天框发送序号（如 1）：</i>")
 
         keyboard: List[List[InlineKeyboardButton]] = []
         for o_idx, opt in enumerate(opts):
@@ -709,7 +709,7 @@ class TelegramHandlers:
             opt_display = opt.strip() if isinstance(opt, str) else str(opt.get("text", "")).strip()
             is_chosen = o_idx in chosen_set
             if is_multi:
-                icon = "✅" if is_chosen else "⬜"
+                icon = "[X]" if is_chosen else "[ ]"
                 btn_label = f"{icon} {opt_num}. {opt_display}"
                 cb_data = f"q_tog:{q_idx}:{o_idx}"
             else:
@@ -723,15 +723,15 @@ class TelegramHandlers:
             keyboard.append([InlineKeyboardButton(btn_label, callback_data=cb_data)])
 
         if is_multi:
-            sub_label = f"📤 确认第 {q_idx+1} 题 (Submit)" if total_q > 1 else "📤 提交选择 (Submit)"
-            skp_label = f"⏭️ 跳过第 {q_idx+1} 题 (Skip)" if total_q > 1 else "⏭️ 跳过 (Skip)"
+            sub_label = f"[SUBMIT] 确认第 {q_idx+1} 题" if total_q > 1 else "[SUBMIT] 确认提交"
+            skp_label = f"[SKIP] 跳过第 {q_idx+1} 题" if total_q > 1 else "[SKIP] 跳过"
             action_row = [
                 InlineKeyboardButton(sub_label, callback_data=f"q_sub:{q_idx}"),
                 InlineKeyboardButton(skp_label, callback_data=f"q_skp:{q_idx}"),
             ]
             keyboard.append(action_row)
         else:
-            skp_label = f"⏭️ 跳过第 {q_idx+1} 题 (Skip)" if total_q > 1 else "⏭️ 跳过 (Skip)"
+            skp_label = f"[SKIP] 跳过第 {q_idx+1} 题" if total_q > 1 else "[SKIP] 跳过"
             keyboard.append([InlineKeyboardButton(skp_label, callback_data=f"q_skp:{q_idx}")])
 
         return "\n".join(lines).strip(), InlineKeyboardMarkup(keyboard)
@@ -906,13 +906,13 @@ class TelegramHandlers:
 
             if query:
                 await self._safe_answer_query(
-                    query, f"✅ 已完成第 {trigger_q_idx+1} 题，已弹出第 {next_unconfirmed+1} 题"
+                    query, f"[OK] 已完成第 {trigger_q_idx+1} 题，已弹出第 {next_unconfirmed+1} 题"
                 )
             return
 
         # All boxes confirmed or skipped!
         if query:
-            await self._safe_answer_query(query, "✅ 选项已全部确认，正在提交...")
+            await self._safe_answer_query(query, "[OK] 选项已全部确认，正在提交...")
 
         ans_lines = []
         summary_lines = []
@@ -1002,7 +1002,7 @@ class TelegramHandlers:
                 try:
                     status_msg = await bot.send_message(
                         chat_id=chat_id,
-                        text=f"✅ <b>选项已全部确认：</b>\n<blockquote>{html.escape(summary_text)}</blockquote>\n\n<i>⏳ Agent 正在继续执行...</i>",
+                        text=f"[OK] <b>选项已全部确认：</b>\n<blockquote>{html.escape(summary_text)}</blockquote>\n\n<i>[RUNNING] Agent 正在继续执行...</i>",
                         parse_mode=ParseMode.HTML,
                     )
                     editor = ThrottledEditor(status_msg, min_interval=1.0)
@@ -1011,7 +1011,7 @@ class TelegramHandlers:
             elif editor:
                 try:
                     await editor.edit(
-                        f"✅ <b>已提交选择：</b>\n<blockquote>{html.escape(summary_text)}</blockquote>\n\n<i>⏳ Agent 正在继续执行...</i>",
+                        f"[OK] <b>已提交选择：</b>\n<blockquote>{html.escape(summary_text)}</blockquote>\n\n<i>[RUNNING] Agent 正在继续执行...</i>",
                         force=True,
                         parse_mode=ParseMode.HTML,
                         reply_markup=None,
@@ -1043,7 +1043,7 @@ class TelegramHandlers:
                 except Exception as exc:
                     logger.exception("Failed to send question answer via fallback send_message")
                     if editor:
-                        await editor.edit(f"❌ *发送选项失败：* `{exc}`", force=True)
+                        await editor.edit(f"[ERROR] *发送选项失败：* `{exc}`", force=True)
                     return
 
             # 3. If no active background stream task is monitoring this turn, launch one
@@ -1129,7 +1129,7 @@ class TelegramHandlers:
 
         if not self.is_authorized(update):
             logger.warning(f"Unauthorized callback query from user {user_id}")
-            await self._safe_answer_query(query, "⛔ 未授权用户，禁止操作", show_alert=True)
+            await self._safe_answer_query(query, "[DENIED] 未授权用户，禁止操作", show_alert=True)
             return
 
         pending = self.pending_questions.get(chat_id)
@@ -1144,7 +1144,7 @@ class TelegramHandlers:
                 pass
             await self._safe_answer_query(
                 query,
-                "⚠️ 该选项已失效、已处理或机器人已重启，请在聊天框直接输入",
+                "[WARN] 该选项已失效、已处理或机器人已重启，请在聊天框直接输入",
                 show_alert=True,
             )
             return
@@ -1199,7 +1199,7 @@ class TelegramHandlers:
                             box_title = f"选项 ({q_idx+1}/{total_q})" if total_q > 1 else "选项"
                             try:
                                 await editor.edit(
-                                    f"✅ <b>{box_title} 已确认：</b>\n<blockquote>{html.escape(opt_text)}</blockquote>",
+                                    f"[OK] <b>{box_title} 已确认：</b>\n<blockquote>{html.escape(opt_text)}</blockquote>",
                                     force=True,
                                     parse_mode=ParseMode.HTML,
                                     reply_markup=None,
@@ -1222,10 +1222,10 @@ class TelegramHandlers:
                     chosen = b.setdefault("selections", set())
                     if o_idx in chosen:
                         chosen.remove(o_idx)
-                        toast_text = f"⬜ 已取消勾选第 {o_idx+1} 项"
+                        toast_text = f"[ ] 已取消勾选第 {o_idx+1} 项"
                     else:
                         chosen.add(o_idx)
-                        toast_text = f"✅ 已勾选第 {o_idx+1} 项"
+                        toast_text = f"[X] 已勾选第 {o_idx+1} 项"
 
                     await self._safe_answer_query(query, toast_text)
 
@@ -1254,7 +1254,7 @@ class TelegramHandlers:
                 chosen = b.get("selections", set())
                 opts = questions[q_idx].get("options", [])
                 if not chosen:
-                    await self._safe_answer_query(query, "⚠️ 请先勾选至少一个选项，或点击【跳过】", show_alert=True)
+                    await self._safe_answer_query(query, "[WARN] 请先勾选至少一个选项，或点击【跳过】", show_alert=True)
                     return
 
                 b["confirmed"] = True
@@ -1266,14 +1266,14 @@ class TelegramHandlers:
                 summary = ", ".join(chosen_texts)
 
                 # Immediately answer callback query
-                await self._safe_answer_query(query, "✅ 已确认提交当前选项")
+                await self._safe_answer_query(query, "[OK] 已确认提交当前选项")
 
                 editor = b.get("editor") or (ThrottledEditor(query.message, min_interval=1.0) if query.message else None)
                 if editor:
                     box_title = f"选项 ({q_idx+1}/{total_q})" if total_q > 1 else "选项"
                     try:
                         await editor.edit(
-                            f"✅ <b>{box_title} 已确认：</b>\n<blockquote>{html.escape(summary)}</blockquote>",
+                            f"[OK] <b>{box_title} 已确认：</b>\n<blockquote>{html.escape(summary)}</blockquote>",
                             force=True,
                             parse_mode=ParseMode.HTML,
                             reply_markup=None,
@@ -1297,14 +1297,14 @@ class TelegramHandlers:
                 b["selections"] = set()
 
                 # Immediately answer callback query
-                await self._safe_answer_query(query, "⏭️ 已跳过当前选项")
+                await self._safe_answer_query(query, "[SKIP] 已跳过当前选项")
 
                 editor = b.get("editor") or (ThrottledEditor(query.message, min_interval=1.0) if query.message else None)
                 if editor:
                     box_title = f"选项 ({q_idx+1}/{total_q})" if total_q > 1 else "选项"
                     try:
                         await editor.edit(
-                            f"⏭️ <b>{box_title} 已跳过</b>",
+                            f"[SKIP] <b>{box_title} 已跳过</b>",
                             force=True,
                             parse_mode=ParseMode.HTML,
                             reply_markup=None,
@@ -1358,7 +1358,7 @@ class TelegramHandlers:
                 box_title = f"选项 ({target_q_idx+1}/{total_q})" if total_q > 1 else "选项"
                 try:
                     await editor.edit(
-                        f"⏭️ <b>{box_title} 已跳过</b>",
+                        f"[SKIP] <b>{box_title} 已跳过</b>",
                         force=True,
                         parse_mode=ParseMode.HTML,
                         reply_markup=None,
@@ -1388,7 +1388,7 @@ class TelegramHandlers:
                     box_title = f"选项 ({target_q_idx+1}/{total_q})" if total_q > 1 else "选项"
                     try:
                         await editor.edit(
-                            f"✅ <b>{box_title} 已确认：</b>\n<blockquote>{html.escape(summary)}</blockquote>",
+                            f"[OK] <b>{box_title} 已确认：</b>\n<blockquote>{html.escape(summary)}</blockquote>",
                             force=True,
                             parse_mode=ParseMode.HTML,
                             reply_markup=None,
@@ -1400,7 +1400,7 @@ class TelegramHandlers:
                 return True
             else:
                 await update.effective_message.reply_text(
-                    f"⚠️ 输入的序号超出第 {target_q_idx+1} 题有效范围（1-{len(opts)}），请重新输入或点击选项按钮。",
+                    f"[WARN] 输入的序号超出第 {target_q_idx+1} 题有效范围（1-{len(opts)}），请重新输入或点击选项按钮。",
                     parse_mode=ParseMode.MARKDOWN,
                 )
                 return True
@@ -1414,7 +1414,7 @@ class TelegramHandlers:
             box_title = f"选项 ({target_q_idx+1}/{total_q})" if total_q > 1 else "选项"
             try:
                 await editor.edit(
-                    f"✅ <b>{box_title} 已确认：</b>\n<blockquote>自定义输入：{html.escape(clean_text)}</blockquote>",
+                    f"[OK] <b>{box_title} 已确认：</b>\n<blockquote>自定义输入：{html.escape(clean_text)}</blockquote>",
                     force=True,
                     parse_mode=ParseMode.HTML,
                     reply_markup=None,
@@ -1453,7 +1453,7 @@ class TelegramHandlers:
         if session.batch_mode:
             count = self.session_mgr.add_batch_message(chat_id, text)
             await update.effective_message.reply_text(
-                f"📝 已暂存消息 #{count}。发送 `/send` 提交执行，或发送 `/cancel` 取消。",
+                f"[BUFFER] 已暂存消息 #{count}。发送 `/send` 提交执行，或发送 `/cancel` 取消。",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -1484,7 +1484,7 @@ class TelegramHandlers:
         conv_id = session.active_conversation_id
 
         status_msg = await update.effective_message.reply_text(
-            "📥 <i>正在接收并下载图片...</i>",
+            "[DOWNLOAD] <i>正在接收并下载图片...</i>",
             parse_mode=ParseMode.HTML,
         )
         editor = ThrottledEditor(status_msg, min_interval=1.2)
@@ -1502,7 +1502,7 @@ class TelegramHandlers:
             await tg_file.download_to_drive(custom_path=str(target_path))
         except Exception as e:
             logger.exception("Failed to download photo from Telegram")
-            await editor.edit(f"❌ 图片下载失败：{e}", force=True, parse_mode=None)
+            await editor.edit(f"[ERROR] 图片下载失败：{e}", force=True, parse_mode=None)
             return
 
         caption = (update.effective_message.caption or "").strip()
@@ -1542,7 +1542,7 @@ class TelegramHandlers:
         size_str = f"{file_size_mb:.2f} MB" if file_size_mb >= 1.0 else f"{(doc.file_size or 0) / 1024:.1f} KB"
 
         status_msg = await update.effective_message.reply_text(
-            f"📥 <i>正在下载文件：<b>{html.escape(clean_name)}</b> ({size_str})...</i>",
+            f"[DOWNLOAD] <i>正在下载文件：<b>{html.escape(clean_name)}</b> ({size_str})...</i>",
             parse_mode=ParseMode.HTML,
         )
         editor = ThrottledEditor(status_msg, min_interval=1.2)
@@ -1558,7 +1558,7 @@ class TelegramHandlers:
             await tg_file.download_to_drive(custom_path=str(target_path))
         except Exception as e:
             logger.exception("Failed to download document from Telegram")
-            await editor.edit(f"❌ 文件下载失败：{e}", force=True, parse_mode=None)
+            await editor.edit(f"[ERROR] 文件下载失败：{e}", force=True, parse_mode=None)
             return
 
         caption = (update.effective_message.caption or "").strip()
@@ -1592,7 +1592,7 @@ class TelegramHandlers:
         args = context.args or []
         if not args:
             await update.effective_message.reply_text(
-                "ℹ️ *用法*：`/getfile <文件路径>`\n例如：`/getfile README.md` 或绝对路径",
+                "[*] *用法*：`/getfile <文件路径>`\n例如：`/getfile README.md` 或绝对路径",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
@@ -1607,19 +1607,19 @@ class TelegramHandlers:
         target = target.resolve()
         if not target.is_file():
             await update.effective_message.reply_text(
-                f"❌ 未找到指定文件：`{target}`",
+                f"[ERROR] 未找到指定文件：`{target}`",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
 
         bot = getattr(self, "bot", None) or (update.effective_message.get_bot() if update.effective_message else None)
-        status_msg = await update.effective_message.reply_text("📤 正在上传发送文件...")
+        status_msg = await update.effective_message.reply_text("[UPLOAD] 正在上传发送文件...")
 
         ext = target.suffix.lower()
         if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-            success = await self._send_image_file(chat_id, str(target), caption=f"📄 <code>{html.escape(target.name)}</code>", bot=bot)
+            success = await self._send_image_file(chat_id, str(target), caption=f"<code>{html.escape(target.name)}</code>", bot=bot)
         else:
-            success = await self._send_document_file(chat_id, str(target), caption=f"📄 <code>{html.escape(target.name)}</code>", bot=bot)
+            success = await self._send_document_file(chat_id, str(target), caption=f"<code>{html.escape(target.name)}</code>", bot=bot)
 
         if success:
             try:
@@ -1628,7 +1628,7 @@ class TelegramHandlers:
                 pass
         else:
             try:
-                await status_msg.edit_text("❌ 发送文件失败，请检查文件权限或大小（Telegram 单文件上限 50MB）。")
+                await status_msg.edit_text("[ERROR] 发送文件失败，请检查文件权限或大小（Telegram 单文件上限 50MB）。")
             except Exception:
                 pass
 
@@ -1700,14 +1700,14 @@ class TelegramHandlers:
         sent_files: Set[str] = set()
         try:
             final_response = ""
-            current_status = "🤖 正在处理中..."
+            current_status = "[RUNNING] 正在处理中..."
 
             async for event in self.monitor.stream_events(conv_id, start_step_index=start_step):
                 if isinstance(event, ThinkingEvent):
                     if chat_id in self.pending_questions:
                         continue
                     clean_thought = html.escape(event.thought.strip().replace("\n", " ")[:80])
-                    current_status = f"🧠 <b>思考中：</b> <i>{clean_thought}...</i>"
+                    current_status = f"[THINKING] <b>思考中：</b> <i>{clean_thought}...</i>"
                     await editor.edit(current_status, parse_mode=ParseMode.HTML)
 
                 elif isinstance(event, ToolCallEvent):
@@ -1743,12 +1743,12 @@ class TelegramHandlers:
                     action = event.tool_action or event.tool_summary or ""
                     clean_tool = html.escape(tool_name)
                     clean_detail = f" ({html.escape(action)})" if action else ""
-                    current_status = f"⚙️ <b>正在执行工具：</b> <code>{clean_tool}</code>{clean_detail}..."
+                    current_status = f"[TOOL] <b>正在执行工具：</b> <code>{clean_tool}</code>{clean_detail}..."
                     await editor.edit(current_status, parse_mode=ParseMode.HTML)
 
                 elif isinstance(event, ToolResultEvent):
                     self.pending_questions.pop(chat_id, None)
-                    current_status = "🔄 正在处理工具执行结果..."
+                    current_status = "[RESULT] 正在处理工具执行结果..."
                     await editor.edit(current_status, parse_mode=None, reply_markup=None)
 
                     # Auto-detect generated image and document paths and send to Telegram
@@ -1760,9 +1760,9 @@ class TelegramHandlers:
                             bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
                             ext = Path(match).suffix.lower()
                             if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-                                await self._send_image_file(chat_id, match, caption="🎨 <b>Agent 已生成并发送图片</b>", bot=bot)
+                                await self._send_image_file(chat_id, match, caption="[IMAGE] <b>Agent 已生成并发送图片</b>", bot=bot)
                             else:
-                                await self._send_document_file(chat_id, match, caption=f"📦 <b>Agent 已生成并发送文件：</b> <code>{html.escape(os.path.basename(match))}</code>", bot=bot)
+                                await self._send_document_file(chat_id, match, caption=f"[FILE] <b>Agent 已生成并发送文件：</b> <code>{html.escape(os.path.basename(match))}</code>", bot=bot)
 
                 elif isinstance(event, TurnCompleteEvent):
                     self.pending_questions.pop(chat_id, None)
@@ -1774,7 +1774,7 @@ class TelegramHandlers:
 
                 elif isinstance(event, ErrorEvent):
                     self.pending_questions.pop(chat_id, None)
-                    await editor.edit(f"❌ *执行出错：* {event.error_message}", force=True)
+                    await editor.edit(f"[ERROR] *执行出错：* {event.error_message}", force=True)
                     return
 
             # Display final agent response
@@ -1793,7 +1793,7 @@ class TelegramHandlers:
                     if path not in sent_files and os.path.isfile(path):
                         sent_files.add(path)
                         bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
-                        await self._send_document_file(chat_id, path, caption=f"📦 <b>文件下载：</b> <code>{html.escape(os.path.basename(path))}</code>", bot=bot)
+                        await self._send_document_file(chat_id, path, caption=f"[DOWNLOAD] <b>文件下载：</b> <code>{html.escape(os.path.basename(path))}</code>", bot=bot)
 
                 # Clean markdown image syntax ![[caption]](path) and document links [text](path) from final_response
                 # to prevent ugly raw markdown tags showing up in Telegram
@@ -1828,15 +1828,15 @@ class TelegramHandlers:
                     try:
                         await editor.message.delete()
                     except Exception:
-                        await editor.edit("✅ <b>图片/文件已发送。</b>", force=True, parse_mode=ParseMode.HTML)
+                        await editor.edit("[OK] <b>图片/文件已发送。</b>", force=True, parse_mode=ParseMode.HTML)
                 else:
-                    await editor.edit("✅ 任务已执行完成（无文本输出内容）。", force=True)
+                    await editor.edit("[OK] 任务已执行完成（无文本输出内容）。", force=True)
 
         except asyncio.CancelledError:
             logger.info(f"Task for chat {chat_id} was cancelled by /stop")
             try:
                 await editor.edit(
-                    "🛑 <b>任务已被用户手动停止。</b>",
+                    "[STOP] <b>任务已被用户手动停止。</b>",
                     force=True,
                     parse_mode=ParseMode.HTML,
                     reply_markup=None,
@@ -1846,7 +1846,7 @@ class TelegramHandlers:
             raise
         except Exception as exc:
             logger.exception("Error executing prompt on Antigravity Agent")
-            await editor.edit(f"❌ *执行失败：* `{exc}`", force=True)
+            await editor.edit(f"[ERROR] *执行失败：* `{exc}`", force=True)
         finally:
             if chat_id not in self.pending_questions:
                 self.active_tasks.pop(chat_id, None)
@@ -1866,7 +1866,7 @@ class TelegramHandlers:
 
         if not editor:
             status_msg = await update.effective_message.reply_text(
-                "⏳ *正在连接本地 Antigravity Agent...*",
+                "[CONNECT] *正在连接本地 Antigravity Agent...*",
                 parse_mode=ParseMode.MARKDOWN,
             )
             editor = ThrottledEditor(status_msg, min_interval=1.2)
@@ -1879,7 +1879,7 @@ class TelegramHandlers:
         try:
             # Auto-create conversation if none exists
             if not conv_id:
-                await editor.edit("🔄 正在初始化新的 Antigravity 会话...")
+                await editor.edit("[INIT] 正在初始化新的 Antigravity 会话...")
                 conv_id = await self.agent_cli.new_conversation(
                     prompt=prompt,
                     model=session.model or self.default_model,
@@ -1890,7 +1890,7 @@ class TelegramHandlers:
             else:
                 # Existing conversation: record current max step
                 start_step = self.monitor.get_current_max_step(conv_id) + 1
-                await editor.edit(f"📤 正在派发任务至会话 `{conv_id[:8]}...`")
+                await editor.edit(f"[DISPATCH] 正在派发任务至会话 `{conv_id[:8]}...`")
                 await self.agent_cli.send_message(
                     conversation_id=conv_id,
                     content=prompt,

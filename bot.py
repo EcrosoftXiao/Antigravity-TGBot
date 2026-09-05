@@ -56,7 +56,7 @@ async def main() -> None:
     if not token or token == "your_telegram_bot_token_here":
         logger.error(
             "\n"
-            "❌ 缺少 TELEGRAM_BOT_TOKEN 配置！\n"
+            "[ERROR] 缺少 TELEGRAM_BOT_TOKEN 配置！\n"
             "请通过以下任一方式进行配置：\n"
             "  1. 创建 .env 文件：复制 .env.example 为 .env 并填入你的 TELEGRAM_BOT_TOKEN\n"
             "  2. 设置环境变量：export TELEGRAM_BOT_TOKEN='你的Token'\n"
@@ -81,15 +81,15 @@ async def main() -> None:
     try:
         ls_addr = agent_cli.ensure_connection()
     except Exception as exc:
-        logger.error(f"❌ {exc}")
+        logger.error(f"[ERROR] {exc}")
         sys.exit(1)
 
     logger.info("=" * 60)
-    logger.info("🛸 正在启动 Antigravity Agent Telegram 远程遥控服务")
-    logger.info(f"🔗 本地宿主服务:   {ls_addr}")
-    logger.info(f"📁 默认工程工作区: {default_ws}")
-    logger.info(f"🧠 默认使用模型:   {default_model}")
-    logger.info(f"🔒 授权用户列表:   {list(allowed_users) if allowed_users else '全部放行 (公开)'}")
+    logger.info("[START] 正在启动 Antigravity Agent Telegram 远程遥控服务")
+    logger.info(f"[*] 本地宿主服务:   {ls_addr}")
+    logger.info(f"[*] 默认工程工作区: {default_ws}")
+    logger.info(f"[*] 默认使用模型:   {default_model}")
+    logger.info(f"[*] 授权用户列表:   {list(allowed_users) if allowed_users else '全部放行 (公开)'}")
     logger.info("=" * 60)
 
     monitor = TranscriptMonitor()
@@ -118,7 +118,7 @@ async def main() -> None:
 
     # 6. Run bot
     await telegram_bot.start()
-    logger.info("✅ Telegram Bot 已成功启动！按 Ctrl+C 退出。")
+    logger.info("[OK] Telegram Bot 已成功启动！按 Ctrl+C 退出。")
 
     try:
         await stop_event.wait()

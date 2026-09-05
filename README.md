@@ -1,4 +1,4 @@
-# Antigravity Telegram Remote Controller 🛸
+# Antigravity Telegram Remote Controller
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
@@ -8,7 +8,7 @@
 
 ---
 
-## ✨ 核心特性
+## 核心特性
 
 1. **纯本地桥接，零 Gemini API Key 鉴权：**
    - 直连本机运行的 Antigravity 宿主进程与内置 `agentapi` 命令行工具。
@@ -22,19 +22,19 @@
    - 核心会话与进程监控（`core/`）与通讯平台（`adapters/`）彻底解耦。
    - 预留了统一的 `BaseBotAdapter` 抽象基类，未来可无缝接入 Discord、Slack、飞书、微信等。
 4. **实时推理流与工具进度反馈：**
-   - 动态监听 `transcript.jsonl` 日志，实时在 Telegram 中推送思考状态（🧠 Thinking）、工具调用状态（⚙️ Tool Call）及执行结果。
+   - 动态监听 `transcript.jsonl` 日志，实时在 Telegram 中推送思考状态（`[THINKING]`）、工具调用状态（`[TOOL]`）及执行结果。
    - 内置智能节流器（ThrottledEditor），严格遵守 Telegram 消息编辑频率限制，避免触发 429 限流。
    - 超过 4096 字符的长消息自动按 Markdown 代码块安全切片分段发送。
 5. **原生交互式选项确认与内联键盘 (Interactive Buttons)**：
    - 当 Agent 调用 `ask_question` 遇到分支决策时，在 Telegram 端实时弹出原生内联按钮（Inline Keyboard）。
-   - 单选直接点击提交，多选支持勾选状态动态切换（⬜ / ✅）与批量提交，并提供跳过选项。
+   - 单选直接点击提交，多选支持勾选状态动态切换（`[ ]` / `[X]`）与批量提交，并提供跳过选项。
    - 兼容在聊天框直接输入数字序号（如 `1` 或 `1, 2`）或自定义文本回复，实现全功能远程闭环。
 6. **严密的安全访问控制：**
    - 允许通过 `ALLOWED_USERS` 配置 Telegram 用户 ID 白名单，杜绝未授权人员远程操作你的计算机。
 
 ---
 
-## 🏛 架构设计
+## 架构设计
 
 ```
 /Users/evasi0nxiao/Antigravity-TG/
@@ -59,7 +59,7 @@
 
 ---
 
-## 🚀 快速开始
+## 快速开始
 
 ### 1. 环境准备
 - macOS 或 Linux 系统。
@@ -113,7 +113,7 @@ python3 bot.py
 
 ---
 
-## 📖 指令大全 (Commands Reference)
+## 指令大全 (Commands Reference)
 
 | 命令 | 参数 | 说明 |
 | :--- | :--- | :--- |
@@ -132,25 +132,25 @@ python3 bot.py
 | `/cancel` | 无 | 退出批量模式并清空当前缓冲区 |
 | `/stop` | 无 | 停止当前正在生成的回复或任务 |
 
-### 🧠 可用模型清单 (Supported Models)
+### 可用模型清单 (Supported Models)
 
 通过 `/models` 可以查看并随时通过 `/model <序号>` 切换当前支持的 7 款模型：
 
 | 序号 | 模型标识 (ID) | 显示名称 | 规格标签 | 特点与适用场景 |
 | :---: | :--- | :--- | :--- | :--- |
-| **1** | `gemini-3.8-flash` | Gemini 3.8 Flash | `High · Fast ⚡` | 默认推荐，新一代多模态旗舰 Flash 模型，高智能、极速响应 |
+| **1** | `gemini-3.8-flash` | Gemini 3.8 Flash | `High / Fast` | 默认推荐，新一代多模态旗舰 Flash 模型，高智能、极速响应 |
 | **2** | `gemini-3.7-flash` | Gemini 3.7 Flash | `Medium` | 经典稳定高效通用模型，各项综合指标优秀 |
-| **3** | `gemini-3.6-flash` | Gemini 3.6 Flash | `Medium · Fast ⚡` | 极速轻量，开销最低，适合日常快速探索与问答 |
-| **4** | `gemini-3.1-pro` | Gemini 3.1 Pro | `Low 🧠` | 专业级深层推理模型，适合大型架构与高难度逻辑任务 |
-| **5** | `claude-sonnet-4.6` | Claude Sonnet 4.6 | `Thinking ⚠️` | Anthropic 思考增强模型，超强代码生成与复杂算法推理 |
-| **6** | `claude-opus-4.6` | Claude Opus 4.6 | `Thinking ⚠️` | Anthropic 顶级超旗舰模型，处理极度复杂的工程任务 |
-| **7** | `gpt-oss-120b` | GPT-OSS 120B | `Medium ⚠️` | 开源大参数模型，兼具高容量与中等推理能力 |
+| **3** | `gemini-3.6-flash` | Gemini 3.6 Flash | `Medium / Fast` | 极速轻量，开销最低，适合日常快速探索与问答 |
+| **4** | `gemini-3.1-pro` | Gemini 3.1 Pro | `Low / Reasoning` | 专业级深层推理模型，适合大型架构与高难度逻辑任务 |
+| **5** | `claude-sonnet-4.6` | Claude Sonnet 4.6 | `Thinking` | Anthropic 思考增强模型，超强代码生成与复杂算法推理 |
+| **6** | `claude-opus-4.6` | Claude Opus 4.6 | `Thinking` | Anthropic 顶级超旗舰模型，处理极度复杂的工程任务 |
+| **7** | `gpt-oss-120b` | GPT-OSS 120B | `Medium` | 开源大参数模型，兼具高容量与中等推理能力 |
 
-> 💬 **日常对话**：在未输入斜杠指令时直接发送普通文本，Bot 会自动转发给当前绑定的 Antigravity 会话（若尚未绑定则自动开启新会话），并实时在 Telegram 中更新 Agent 的思考过程与工具调用！
+> **日常对话**：在未输入斜杠指令时直接发送普通文本，Bot 会自动转发给当前绑定的 Antigravity 会话（若尚未绑定则自动开启新会话），并实时在 Telegram 中更新 Agent 的思考过程与工具调用！
 
 ---
 
-## 🔌 扩展其他 IM 平台 (Extensibility)
+## 扩展其他 IM 平台 (Extensibility)
 
 如需增加其他平台支持（如 Discord、Slack、飞书）：
 1. 继承 `antigravity_bridge/adapters/base.py` 中的 `BaseBotAdapter` 基类。
@@ -159,6 +159,6 @@ python3 bot.py
 
 ---
 
-## 🛡️ 安全提示
+## 安全提示
 
 由于 Antigravity Agent 在本机具备强大的执行能力（读写文件、终端运行命令等），**请务必在 `.env` 中设置 `ALLOWED_USERS`**，切勿将未设权限过滤的 Bot Token 暴露在公开群组或开放给陌生人。
