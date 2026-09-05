@@ -2360,16 +2360,23 @@ class TelegramHandlers:
                         traj = await self.agent_cli.get_cascade_trajectory(conv_id)
                         if traj:
                             c_status = traj.get("status", "")
+                            # Only treat genuine cancellation/stopped states as stop, NEVER normal IDLE
                             is_stopped = False
-                            if c_status and c_status != "CASCADE_RUN_STATUS_RUNNING":
+                            if c_status in (
+                                "CASCADE_RUN_STATUS_CANCELLED",
+                                "CASCADE_RUN_STATUS_USER_CANCELLED",
+                                "CASCADE_RUN_STATUS_STOPPED",
+                            ):
                                 is_stopped = True
                             else:
                                 steps = traj.get("trajectory", {}).get("steps", [])
-                                if steps and steps[-1].get("status") == "CORTEX_STEP_STATUS_CANCELLED":
-                                    is_stopped = True
+                                if steps:
+                                    last_status = steps[-1].get("status", "")
+                                    if last_status in ("CORTEX_STEP_STATUS_CANCELLED", "CORTEX_STEP_STATUS_STOPPED"):
+                                        is_stopped = True
 
                             if is_stopped:
-                                logger.info(f"Detected client-side stop in {conv_id[:8]} (status: {c_status})")
+                                logger.info(f"Detected genuine client-side stop in {conv_id[:8]} (status: {c_status})")
                                 if turn_task and not turn_task.done():
                                     turn_task.cancel()
                                 break
