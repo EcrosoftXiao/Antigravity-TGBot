@@ -2371,8 +2371,15 @@ class TelegramHandlers:
                             else:
                                 steps = traj.get("trajectory", {}).get("steps", [])
                                 if steps:
-                                    last_status = steps[-1].get("status", "")
-                                    if last_status in ("CORTEX_STEP_STATUS_CANCELLED", "CORTEX_STEP_STATUS_STOPPED"):
+                                    last_step = steps[-1]
+                                    last_status = last_step.get("status", "")
+                                    stop_reason = last_step.get("plannerResponse", {}).get("stopReason", "")
+                                    if (
+                                        last_status in ("CORTEX_STEP_STATUS_CANCELLED", "CORTEX_STEP_STATUS_STOPPED")
+                                        or "CLIENT_STREAM_ERROR" in stop_reason
+                                        or "CANCEL" in stop_reason
+                                        or "USER" in stop_reason
+                                    ):
                                         is_stopped = True
 
                             if is_stopped:
