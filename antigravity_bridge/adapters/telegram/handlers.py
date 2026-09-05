@@ -1984,6 +1984,7 @@ class TelegramHandlers:
         if chat_id not in self.pending_approvals:
             self._try_recover_pending_approval(chat_id)
 
+        actual_prompt = text
         if chat_id in self.pending_approvals:
             pending = self.pending_approvals.pop(chat_id, None)
             if pending:
