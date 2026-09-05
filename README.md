@@ -14,10 +14,12 @@
 1. **纯本地原生桥接，零云端 API Key 依赖**
    - 直连本机运行的 Antigravity 宿主进程、Language Server（端口 `59242`）与原生 `agentapi` 命令行工具。
    - 自动复用本地 IDE 登录凭证与权限沙箱，**无需申请或配置任何 Gemini API Key**。
-2. **实时思考流与动态进度仪表盘 (Thinking & Progress Dashboard)**
-   - 实时在 Telegram 端呈现 Agent 的 `<thought>` 深度思考过程。
-   - **子任务状态树**：清晰展示工具调用状态（`[DONE]` 已完成 / `[RUNNING]` 执行中 / `[PENDING]` 待执行）。
-   - **动态耗时心跳**：内置秒级动态耗时计算器（如 `⏱ 12s`），任务执行节奏一览无余。
+2. **实时思考流与动态执行仪表盘 (Thinking & Progress Dashboard)**
+   - **对齐 IDE 的具体操作呈现**：执行命令时直观显示 `Ran <command>`，查看/编辑文件时显示 `Viewed/Edited <filename>`，搜索代码时显示具体关键词，随时掌握 Agent 正在做的事情。
+   - **可折叠深度思考与动作详情**：采用 Telegram 原生 `<blockquote expandable>` 折叠语法，默认整洁收纳，支持随时点击展开查看完整的思考分析与操作明细。
+   - **子任务状态树**：调度子代理时清晰展示协同树（`[DONE]` 已完成 / `[RUNNING]` 运行中）。
+   - **动态耗时心跳**：内置总耗时与单步耗时双时钟（如 `总计: 12s · 本步: 3s`），任务节奏一目了然。
+   - **精准停止状态同步**：支持随时停止任务（`/stop` 或客户端终止），且严谨区分空闲态与取消态，杜绝误报。
 3. **桌面客户端与手机全双工双向实时同步 (Full-Duplex Sync)**
    - 手机端与电脑 IDE 客户端完全打通！
    - 无论是在 Telegram 还是在 Antigravity 桌面客户端中对话，Telegram 均能增量捕获 `USER_INPUT` 并实时流式转发 Agent 的思考卡片与最终回复。
