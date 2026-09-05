@@ -356,7 +356,7 @@ class TelegramHandlers:
 
         chat_id = update.effective_chat.id
         session = self.session_mgr.get_session(chat_id)
-        conv_id = session.active_conversation_id
+        conv_id = session.active_conversation_id or session.previous_conversation_id
 
         limit = 3
         target_conv_id = conv_id

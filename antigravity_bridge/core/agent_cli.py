@@ -665,10 +665,13 @@ class AgentCliBridge:
                         if t == "USER_INPUT":
                             if current_user is not None and last_agent_resp:
                                 history.append((current_user, last_agent_resp))
-                            clean = re.sub(r"<USER_REQUEST>|\n?</USER_REQUEST>", "", c).strip()
+                            clean = re.sub(r"<CONTEXT_SUMMARY>[\s\S]*?</CONTEXT_SUMMARY>", "", c).strip()
+                            clean = re.sub(r"<USER_REQUEST>|\n?</USER_REQUEST>", "", clean).strip()
                             clean = re.sub(r"<ADDITIONAL_METADATA>[\s\S]*?</ADDITIONAL_METADATA>", "", clean).strip()
-                            current_user = clean
-                            last_agent_resp = ""
+                            clean = re.sub(r"<USER_SETTINGS_CHANGE>[\s\S]*?</USER_SETTINGS_CHANGE>", "", clean).strip()
+                            if clean:
+                                current_user = clean
+                                last_agent_resp = ""
                         elif t == "PLANNER_RESPONSE" and c:
                             last_agent_resp = c
                     except json.JSONDecodeError:
@@ -676,6 +679,7 @@ class AgentCliBridge:
 
             if current_user is not None and last_agent_resp:
                 history.append((current_user, last_agent_resp))
+            return history[-limit:]
         except OSError as exc:
             logger.warning(f"Error reading transcript for {conversation_id}: {exc}")
             return []
