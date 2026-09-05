@@ -529,6 +529,23 @@ class TranscriptMonitor:
                                 output_preview=str(out)[:200],
                             )
 
+                        elif step_type == "ERROR_MESSAGE" or "interrupted" in str(step_data.get("content", "")).lower():
+                            # Interruption detected (e.g. user clicked Stop in desktop IDE client)
+                            err_msg = str(step_data.get("content", "")).strip() or "任务已被客户端中断 (Stop)"
+                            yield ErrorEvent(
+                                step_index=step_idx,
+                                error_message=err_msg,
+                            )
+                            return
+
+                        elif step_type == "USER_INPUT" and step_idx > start_step_index:
+                            # A new user turn was entered externally while this turn was waiting
+                            yield ErrorEvent(
+                                step_index=step_idx,
+                                error_message="已收到新指令，当前等待已中止",
+                            )
+                            return
+
                     else:
                         # No new line right now, sleep briefly
                         await asyncio.sleep(poll_interval)

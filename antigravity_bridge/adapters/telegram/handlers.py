@@ -2340,7 +2340,11 @@ class TelegramHandlers:
         sent_files: Set[str] = set()
         tracker = TurnProgressTracker(conversation_id=conv_id)
 
+        turn_task = asyncio.current_task()
+        last_check_time = time.time()
+
         async def _heartbeat_ticker():
+            nonlocal last_check_time
             while True:
                 try:
                     await asyncio.sleep(1.2)
@@ -2348,6 +2352,27 @@ class TelegramHandlers:
                         continue
                     status_html = tracker.format_status_html()
                     await editor.edit(status_html, parse_mode=ParseMode.HTML)
+
+                    # Periodically check if the desktop client stopped or halted the cascade
+                    now = time.time()
+                    if now - tracker.turn_start_time > 2.5 and now - last_check_time >= 2.0:
+                        last_check_time = now
+                        traj = await self.agent_cli.get_cascade_trajectory(conv_id)
+                        if traj:
+                            c_status = traj.get("status", "")
+                            is_stopped = False
+                            if c_status and c_status != "CASCADE_RUN_STATUS_RUNNING":
+                                is_stopped = True
+                            else:
+                                steps = traj.get("trajectory", {}).get("steps", [])
+                                if steps and steps[-1].get("status") == "CORTEX_STEP_STATUS_CANCELLED":
+                                    is_stopped = True
+
+                            if is_stopped:
+                                logger.info(f"Detected client-side stop in {conv_id[:8]} (status: {c_status})")
+                                if turn_task and not turn_task.done():
+                                    turn_task.cancel()
+                                break
                 except asyncio.CancelledError:
                     break
                 except Exception as ticker_err:
@@ -2702,3 +2727,37 @@ class TelegramHandlers:
             await task
         except Exception as exc:
             logger.debug(f"External stream task finished: {exc}")
+
+    async def shutdown(self) -> None:
+        """Gracefully notify and halt all active tasks before bot process shutdown/restart."""
+        logger.info("TelegramHandlers shutting down, synchronizing in-flight tasks...")
+
+        # 1. Update in-flight status editors to inform users of the shutdown/restart
+        for chat_id, editor in list(self.active_editors.items()):
+            try:
+                await editor.edit(
+                    "[STOP] <b>机器人服务正在停止或重启，当前任务已安全中断。</b>",
+                    force=True,
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=None,
+                )
+            except Exception as exc:
+                logger.debug(f"Failed to edit status on shutdown for chat {chat_id}: {exc}")
+
+        # 2. Cancel in-flight cascades on Language Server
+        for chat_id, session in list(self.session_mgr.sessions.items()):
+            conv_id = session.active_conversation_id
+            if conv_id and chat_id in self.active_tasks:
+                try:
+                    await self.agent_cli.cancel_cascade(conv_id)
+                except Exception as exc:
+                    logger.debug(f"Failed to cancel cascade on shutdown for conv {conv_id[:8]}: {exc}")
+
+        # 3. Cancel active task handles
+        for chat_id, task in list(self.active_tasks.items()):
+            if task and not task.done():
+                task.cancel()
+
+        self.active_tasks.clear()
+        self.active_editors.clear()
+        logger.info("TelegramHandlers shutdown completed cleanly.")

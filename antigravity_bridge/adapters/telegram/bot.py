@@ -287,6 +287,11 @@ class TelegramBotAdapter(BaseBotAdapter):
 
         if self.app:
             logger.info("Stopping Telegram Bot Adapter...")
+            try:
+                await self.handlers.shutdown()
+            except Exception as e:
+                logger.warning(f"Error during handlers shutdown: {e}")
+
             if self.app.updater and self.app.updater.running:
                 await self.app.updater.stop()
             if self.app.running:
