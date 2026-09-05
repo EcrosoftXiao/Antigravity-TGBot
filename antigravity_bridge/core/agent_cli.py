@@ -7,12 +7,13 @@ import os
 import re
 import shutil
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from .models import ConversationInfo
+from .models import AVAILABLE_MODELS, ConversationInfo, ModelOption, update_available_models
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ class AgentCliBridge:
         self.agentapi_cmd = self._resolve_agentapi(agentapi_path)
         self._cached_ls_address: Optional[str] = os.getenv("ANTIGRAVITY_LS_ADDRESS")
         self._cached_csrf_token: Optional[str] = os.getenv("ANTIGRAVITY_CSRF_TOKEN")
+        self._cached_models: List[ModelOption] = []
+        self._models_cached_at: float = 0.0
         logger.info(f"Initialized AgentCliBridge using command: {self.agentapi_cmd}")
 
     def _resolve_agentapi(self, custom_path: Optional[str]) -> List[str]:
@@ -653,3 +656,178 @@ class AgentCliBridge:
 
         return history[-limit:]
 
+    async def get_available_models(self, force_refresh: bool = False) -> List[ModelOption]:
+        """Fetch available models in real-time from Antigravity Language Server via GetAvailableModels RPC."""
+        now = time.time()
+        # Use cache if fresh (< 60s) and not forced
+        if not force_refresh and self._cached_models and (now - self._models_cached_at) < 60:
+            return self._cached_models
+
+        def _do_rpc() -> Optional[Dict[str, Any]]:
+            try:
+                ls_addr = self.ensure_connection()
+                csrf_token = self._cached_csrf_token
+                url = f"http://{ls_addr}/exa.language_server_pb.LanguageServerService/GetAvailableModels"
+                headers = {
+                    "Content-Type": "application/json",
+                    "Connect-Protocol-Version": "1",
+                }
+                if csrf_token:
+                    headers["x-codeium-csrf-token"] = csrf_token
+
+                req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    if resp.status == 200:
+                        return json.loads(resp.read().decode("utf-8"))
+            except Exception as e:
+                logger.debug(f"Failed to fetch live models from Language Server: {e}")
+            return None
+
+        loop = asyncio.get_running_loop()
+        rpc_result = await loop.run_in_executor(None, _do_rpc)
+
+        if not rpc_result or "response" not in rpc_result:
+            # Fallback to current available models if RPC failed
+            return AVAILABLE_MODELS
+
+        resp_data = rpc_result.get("response", {})
+        models_dict = resp_data.get("models", {})
+        agent_sorts = resp_data.get("agentModelSorts", [])
+
+        # 1. Discover recommended order from agentModelSorts
+        rec_ids: List[str] = []
+        if agent_sorts and "groups" in agent_sorts[0]:
+            for g in agent_sorts[0]["groups"]:
+                for mid in g.get("modelIds", []):
+                    if mid not in rec_ids and mid in models_dict:
+                        rec_ids.append(mid)
+
+        # 2. Append any remaining models not in recommended sorts
+        for mid in models_dict:
+            if mid not in rec_ids and not mid.startswith("tab_") and not mid.startswith("chat_"):
+                rec_ids.append(mid)
+
+        if not rec_ids:
+            return AVAILABLE_MODELS
+
+        def _get_series_key(m_id: str) -> str:
+            if "3.8-flash" in m_id: return "gemini-3.8-flash"
+            if "3.7-flash" in m_id: return "gemini-3.7-flash"
+            if "3.6-flash" in m_id: return "gemini-3.6-flash"
+            if "3.5-flash" in m_id: return "gemini-3.5-flash"
+            if "2.5-flash" in m_id: return "gemini-2.5-flash"
+            if "pro" in m_id: return "gemini-pro"
+            if "sonnet" in m_id: return "claude-sonnet"
+            if "opus" in m_id: return "claude-opus"
+            if "gpt" in m_id or "120b" in m_id: return "gpt-oss"
+            return re.sub(r"-(high|medium|low|thinking|extra-low)$", "", m_id)
+
+        from collections import Counter
+        series_keys = [_get_series_key(mid) for mid in rec_ids]
+        series_counts = Counter(series_keys)
+
+        series_counter: Dict[str, Tuple[int, int]] = {}
+        parsed_models: List[ModelOption] = []
+        for mid in rec_ids:
+            s_key = _get_series_key(mid)
+            if s_key not in series_counter:
+                major = len(series_counter) + 1
+                sub = 1
+            else:
+                major, last_sub = series_counter[s_key]
+                sub = last_sub + 1
+            series_counter[s_key] = (major, sub)
+
+            if series_counts[s_key] == 1:
+                code = str(major)
+            else:
+                code = f"{major}.{sub}"
+
+            info = models_dict.get(mid, {})
+            disp = info.get("displayName", mid)
+            thinking = info.get("supportsThinking", False)
+            quota_info = info.get("quotaInfo", {})
+            remaining = quota_info.get("remainingFraction")
+            reset_time = quota_info.get("resetTime")
+
+            # Determine badge
+            lower_disp = disp.lower()
+            if "high" in lower_disp and thinking:
+                badge = "High / Thinking"
+            elif "high" in lower_disp:
+                badge = "High / Fast"
+            elif "medium" in lower_disp and thinking:
+                badge = "Medium / Thinking"
+            elif "medium" in lower_disp:
+                badge = "Medium"
+            elif "low" in lower_disp and ("pro" in mid or "claude" in mid):
+                badge = "Low / Reasoning"
+            elif "low" in lower_disp:
+                badge = "Low / Fast"
+            elif thinking:
+                badge = "Thinking"
+            else:
+                badge = "Standard"
+
+            # Determine tier
+            if any(k in mid for k in ("pro", "claude", "gpt")):
+                tier = "pro"
+            elif "lite" in mid or "3.6" in mid:
+                tier = "flash_lite"
+            else:
+                tier = "flash"
+
+            # Determine friendly description
+            if "claude-opus" in mid:
+                desc = "Anthropic 顶级超旗舰模型，处理极度复杂的工程与深度推理任务"
+            elif "claude-sonnet" in mid:
+                desc = "Anthropic 思考增强模型，超强代码生成与复杂算法推理"
+            elif "gpt-oss" in mid:
+                desc = "开源大参数模型，兼具高容量与中等推理能力"
+            elif "3.8" in mid:
+                desc = "新一代多模态旗舰 Flash 模型，高智能、极速响应"
+            elif "3.7" in mid:
+                desc = "经典稳定高效通用模型，综合能力优秀"
+            elif "3.6" in mid:
+                desc = "极速轻量模型，资源开销低，适合常规问答与代码探索"
+            elif "pro" in mid:
+                desc = "专业级深层推理模型，适合大型架构与高难度逻辑任务"
+            else:
+                desc = f"Antigravity Agent 支持的可用模型 ({disp})"
+
+            # Generate smart aliases
+            aliases: List[str] = [code, mid]
+            # If this is the first (default/highest) option in a major series, also allow typing the major number alone
+            if sub == 1:
+                aliases.append(str(major))
+
+            # Strip common suffixes/prefixes
+            clean_alias = re.sub(r"-(high|medium|low|thinking)", "", mid)
+            if clean_alias not in aliases:
+                aliases.append(clean_alias)
+            # Add short names
+            for short in ("sonnet", "opus", "flash", "pro", "120b", "3.8", "3.7", "3.6"):
+                if short in mid and short not in aliases:
+                    aliases.append(short)
+
+            opt = ModelOption(
+                index=major,
+                code=code,
+                id=mid,
+                display_name=disp,
+                badge=badge,
+                description=desc,
+                tier=tier,
+                aliases=aliases,
+                supports_thinking=thinking,
+                quota_remaining=remaining,
+                reset_time=reset_time,
+                is_recommended=(mid in rec_ids),
+            )
+            parsed_models.append(opt)
+
+        self._cached_models = parsed_models
+        self._models_cached_at = now
+        update_available_models(parsed_models)
+        logger.info(f"Successfully fetched {len(parsed_models)} live models from Antigravity Language Server")
+        return parsed_models

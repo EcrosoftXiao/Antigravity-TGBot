@@ -14,98 +14,137 @@ class ModelOption:
     description: str
     tier: str
     aliases: List[str] = field(default_factory=list)
+    supports_thinking: bool = False
+    quota_remaining: Optional[float] = None
+    reset_time: Optional[str] = None
+    is_recommended: bool = True
+    code: str = ""
+
+    def __post_init__(self):
+        if not self.code:
+            self.code = str(self.index)
 
 
 AVAILABLE_MODELS: List[ModelOption] = [
     ModelOption(
         index=1,
-        id="gemini-3.8-flash",
-        display_name="Gemini 3.8 Flash",
+        code="1.1",
+        id="gemini-3.8-flash-high",
+        display_name="Gemini 3.8 Flash (High)",
         badge="High / Fast",
         description="新一代多模态旗舰 Flash 模型，高智能、快速响应",
         tier="flash",
-        aliases=["1", "gemini-3.8", "gemini-3.8-flash", "3.8", "flash-3.8", "flash"],
+        aliases=["1.1", "1", "gemini-3.8", "gemini-3.8-flash", "3.8", "flash-3.8", "flash", "flash-high"],
+        supports_thinking=True,
     ),
     ModelOption(
         index=2,
-        id="gemini-3.7-flash",
-        display_name="Gemini 3.7 Flash",
+        code="2.1",
+        id="gemini-3.7-flash-high",
+        display_name="Gemini 3.7 Flash (High)",
         badge="Medium",
         description="经典稳定高效通用模型，综合能力优秀",
         tier="flash",
-        aliases=["2", "gemini-3.7", "gemini-3.7-flash", "3.7", "flash-3.7"],
+        aliases=["2.1", "2", "gemini-3.7", "gemini-3.7-flash", "3.7", "flash-3.7"],
+        supports_thinking=True,
     ),
     ModelOption(
         index=3,
-        id="gemini-3.6-flash",
-        display_name="Gemini 3.6 Flash",
+        code="3.1",
+        id="gemini-3.6-flash-high",
+        display_name="Gemini 3.6 Flash (High)",
         badge="Medium / Fast",
         description="极速轻量模型，资源开销低，适合常规问答与代码探索",
         tier="flash_lite",
-        aliases=["3", "gemini-3.6", "gemini-3.6-flash", "3.6", "flash-3.6", "flash_lite", "lite"],
+        aliases=["3.1", "3", "gemini-3.6", "gemini-3.6-flash", "3.6", "flash-3.6", "flash_lite", "lite"],
+        supports_thinking=True,
     ),
     ModelOption(
         index=4,
-        id="gemini-3.1-pro",
-        display_name="Gemini 3.1 Pro",
+        code="4.1",
+        id="gemini-pro-agent",
+        display_name="Gemini 3.1 Pro (High)",
         badge="Low / Reasoning",
         description="专业级深层推理模型，适合大型架构与高难度逻辑任务",
         tier="pro",
-        aliases=["4", "gemini-3.1", "gemini-3.1-pro", "3.1", "pro-3.1", "pro"],
+        aliases=["4.1", "4", "gemini-3.1", "gemini-3.1-pro", "3.1", "pro-3.1", "pro", "gemini-pro"],
+        supports_thinking=True,
     ),
     ModelOption(
         index=5,
-        id="claude-sonnet-4.6",
+        code="5",
+        id="claude-sonnet-4-6",
         display_name="Claude Sonnet 4.6 (Thinking)",
         badge="Thinking",
         description="Anthropic 思考增强模型，超强代码生成与复杂算法推理",
         tier="pro",
-        aliases=["5", "claude-sonnet", "sonnet", "claude-sonnet-4.6", "sonnet-4.6", "claude-4.6", "sonnet4.6"],
+        aliases=["5", "5.1", "claude-sonnet", "sonnet", "claude-sonnet-4.6", "sonnet-4.6", "claude-4.6", "sonnet4.6"],
+        supports_thinking=True,
     ),
     ModelOption(
         index=6,
-        id="claude-opus-4.6",
+        code="6",
+        id="claude-opus-4-6-thinking",
         display_name="Claude Opus 4.6 (Thinking)",
         badge="Thinking",
         description="Anthropic 顶级超旗舰模型，处理极度复杂的工程与推理任务",
         tier="pro",
-        aliases=["6", "claude-opus", "opus", "claude-opus-4.6", "opus-4.6", "opus4.6"],
+        aliases=["6", "6.1", "claude-opus", "opus", "claude-opus-4.6", "opus-4.6", "opus4.6"],
+        supports_thinking=True,
     ),
     ModelOption(
         index=7,
-        id="gpt-oss-120b",
-        display_name="GPT-OSS 120B",
+        code="7",
+        id="gpt-oss-120b-medium",
+        display_name="GPT-OSS 120B (Medium)",
         badge="Medium",
         description="开源大参数模型，兼具高容量与中等推理能力",
         tier="pro",
-        aliases=["7", "gpt-oss", "gpt-oss-120b", "gpt", "oss", "120b", "gpt-oss-120b-medium"],
+        aliases=["7", "7.1", "gpt-oss", "gpt-oss-120b", "gpt", "oss", "120b"],
+        supports_thinking=True,
     ),
 ]
 
 
-def get_model_by_identifier(identifier: str) -> Optional[ModelOption]:
-    """Resolve a model option by numerical index (1-7), id, alias, or display name."""
+def update_available_models(new_models: List[ModelOption]) -> None:
+    """Update the global available models list at runtime."""
+    global AVAILABLE_MODELS
+    if new_models:
+        AVAILABLE_MODELS = new_models
+
+
+def get_model_by_identifier(identifier: str, model_list: Optional[List[ModelOption]] = None) -> Optional[ModelOption]:
+    """Resolve a model option by hierarchical code (1.1), numerical index (1), id, alias, or display name."""
+    models = model_list if model_list is not None else AVAILABLE_MODELS
     cleaned = identifier.strip().lower()
 
-    # 1. Check numeric index
+    # 1. Check exact hierarchical code match (e.g. "1.1", "1.2", "4.1")
+    for opt in models:
+        if opt.code and opt.code.lower() == cleaned:
+            return opt
+
+    # 2. Check numeric major index (e.g. "1" matches the default/first option in group 1, like 1.1)
     if cleaned.isdigit():
+        for opt in models:
+            if opt.code == f"{cleaned}.1" or opt.code == cleaned:
+                return opt
         idx = int(cleaned)
-        for opt in AVAILABLE_MODELS:
+        for opt in models:
             if opt.index == idx:
                 return opt
 
-    # 2. Check exact id
-    for opt in AVAILABLE_MODELS:
+    # 3. Check exact id
+    for opt in models:
         if opt.id.lower() == cleaned:
             return opt
 
-    # 3. Check aliases
-    for opt in AVAILABLE_MODELS:
+    # 4. Check aliases
+    for opt in models:
         if any(cleaned == a.lower() for a in opt.aliases):
             return opt
 
-    # 4. Check prefix / substring match
-    for opt in AVAILABLE_MODELS:
+    # 5. Check prefix / substring match
+    for opt in models:
         if cleaned in opt.id.lower() or cleaned in opt.display_name.lower():
             return opt
 

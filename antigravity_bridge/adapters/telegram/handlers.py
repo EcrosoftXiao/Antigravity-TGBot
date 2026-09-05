@@ -161,6 +161,12 @@ class TelegramHandlers:
         if context.args:
             target_arg = context.args[0].strip().lower()
             opt = get_model_by_identifier(target_arg)
+            if not opt:
+                try:
+                    live_models = await self.agent_cli.get_available_models(force_refresh=True)
+                    opt = get_model_by_identifier(target_arg, model_list=live_models)
+                except Exception:
+                    pass
             if opt:
                 model = opt.id
                 self.session_mgr.set_model(chat_id, model)
@@ -440,7 +446,7 @@ class TelegramHandlers:
         batch = f"已开启 (已暂存 {len(session.batch_buffer)} 条)" if session.batch_mode else "未开启"
 
         opt = get_model_by_identifier(session.model or self.default_model)
-        model_display = f"#{opt.index} {opt.display_name} [{opt.badge}]" if opt else (session.model or self.default_model)
+        model_display = f"#{opt.code} {opt.display_name} [{opt.badge}]" if opt else (session.model or self.default_model)
         text = (
             "[STATUS] *Antigravity 远程遥控桥接状态*\n\n"
             f"• *当前活动会话*：`{conv_id}`\n"
@@ -462,23 +468,122 @@ class TelegramHandlers:
         session = self.session_mgr.get_session(chat_id)
         current_model = session.model or self.default_model
 
-        lines = ["[MODELS] *Antigravity Models (当前支持的所有模型):*\n"]
-        for opt in AVAILABLE_MODELS:
-            is_selected = (opt.id == current_model or opt.tier == current_model or str(opt.index) == current_model)
-            prefix = "[ACTIVE] " if is_selected else "• "
-            selected_tag = " *(当前已选中)*" if is_selected else ""
-            lines.append(
-                f"{prefix}*#{opt.index}* `{opt.id}` — *{opt.display_name}* `[{opt.badge}]`{selected_tag}\n"
-                f"   _{opt.description}_\n"
-            )
+        status_msg = await update.effective_message.reply_text("[MODELS] 正在从本地 Antigravity 获取实时模型列表...")
 
-        lines.append("━━━━━━━━━━━━━━━━━━━━━━")
+        try:
+            live_models = await self.agent_cli.get_available_models(force_refresh=True)
+        except Exception as exc:
+            logger.warning(f"Failed to fetch live models: {exc}")
+            live_models = AVAILABLE_MODELS
+
+        show_all = bool(context.args and context.args[0].lower() in ("all", "full", "全部"))
+        display_models = live_models if show_all else [m for m in live_models if getattr(m, "is_recommended", True)]
+        if not display_models:
+            display_models = live_models
+
+        def format_limit_remaining(quota_remaining: Optional[float], reset_time_str: Optional[str]) -> str:
+            resets_in = ""
+            if reset_time_str:
+                try:
+                    clean_iso = reset_time_str.replace("Z", "+00:00")
+                    reset_dt = datetime.datetime.fromisoformat(clean_iso)
+                    now_dt = datetime.datetime.now(datetime.timezone.utc)
+                    secs = int((reset_dt - now_dt).total_seconds())
+                    if secs <= 0:
+                        resets_in = "Resets soon"
+                    else:
+                        hours = secs // 3600
+                        mins = (secs % 3600) // 60
+                        if hours > 0:
+                            resets_in = f"Resets in {hours}h {mins}m"
+                        else:
+                            resets_in = f"Resets in {mins}m"
+                except Exception:
+                    pass
+
+            pct_str = f"{int(round(quota_remaining * 100))}%" if quota_remaining is not None else ("0%" if reset_time_str else "100%")
+            reset_suffix = f" ({resets_in})" if resets_in else ""
+            return f"Five Hour Limit Remaining: {pct_str}{reset_suffix}"
+
+        lines = ["[MODELS] <b>Antigravity 实时可用模型列表:</b>\n"]
+        # Group models by major series (opt.index)
+        groups: Dict[int, List[ModelOption]] = {}
+        for opt in display_models:
+            groups.setdefault(opt.index, []).append(opt)
+
+        def get_series_title(m: ModelOption) -> str:
+            disp = m.display_name
+            cleaned = re.sub(r"\s*\((High|Medium|Low|Thinking)\)", "", disp, flags=re.IGNORECASE).strip()
+            return cleaned
+
+        def get_sub_level_label(m_id: str, badge: str, disp: str) -> str:
+            m_level = re.search(r"-(high|medium|low|thinking|extra-low)$", m_id.lower())
+            if m_level:
+                lvl = m_level.group(1)
+                if badge and badge.lower() != lvl:
+                    return f"{lvl} [{badge}]"
+                return lvl
+            m_disp = re.search(r"\((High|Medium|Low|Thinking)\)", disp, flags=re.IGNORECASE)
+            if m_disp:
+                lvl = m_disp.group(1).lower()
+                if badge and badge.lower() != lvl:
+                    return f"{lvl} [{badge}]"
+                return lvl
+            return f"standard [{badge}]" if badge else "standard"
+
+        for major_idx, opts in groups.items():
+            first_opt = opts[0]
+            series_name = html.escape(get_series_title(first_opt))
+            escaped_desc = html.escape(first_opt.description)
+            limit_str = format_limit_remaining(first_opt.quota_remaining, first_opt.reset_time)
+
+            is_series_active = any(
+                (opt.id == current_model or opt.code == current_model or opt.tier == current_model)
+                for opt in opts
+            )
+            series_prefix = "[ACTIVE] " if is_series_active else "• "
+
+            if len(opts) == 1:
+                # Single item series: show directly on the series header line without sub-levels
+                selected_tag = " <b>(当前已选中)</b>" if is_series_active else ""
+                badge_tag = f" <code>[{first_opt.badge}]</code>" if first_opt.badge else ""
+                lines.append(f"{series_prefix}<b>#{first_opt.code} {series_name}</b>{badge_tag}{selected_tag}")
+                lines.append(f"  <i>{escaped_desc}</i>")
+                if limit_str:
+                    lines.append(f"  <code>[{limit_str}]</code>")
+            else:
+                # Multiple sub-items in series: render header and indented sub-levels
+                lines.append(f"{series_prefix}<b>#{major_idx} {series_name}</b>")
+                lines.append(f"  <i>{escaped_desc}</i>")
+                if limit_str:
+                    lines.append(f"  <code>[{limit_str}]</code>")
+
+                for opt in opts:
+                    is_opt_selected = (opt.id == current_model or opt.code == current_model or opt.tier == current_model)
+                    sub_prefix = "    [ACTIVE] " if is_opt_selected else "  • "
+                    selected_tag = " <b>(当前已选中)</b>" if is_opt_selected else ""
+                    sub_label = html.escape(get_sub_level_label(opt.id, opt.badge, opt.display_name))
+
+                    lines.append(f"{sub_prefix}<b>#{opt.code}</b> {sub_label}{selected_tag}")
+            lines.append("")
+
+        lines.append("────────────────────")
         lines.append(
-            "[*] *选择模型指令:*\n"
-            "• *按序号选择*：发送 `/model 1` 到 `/model 7`\n"
-            "• *按名称选择*：发送 `/model sonnet`、`/model 3.8` 等"
+            "<b>[*] 切换模型使用指南:</b>\n"
+            "• <b>按精准分级序号</b>：发送 <code>/model 1.1</code> (High 档), <code>/model 1.2</code> (Medium 档), <code>/model 1.3</code> (Low 档)\n"
+            "• <b>按大类主序号</b>：发送 <code>/model 1</code> (自动选择 Gemini 3.8 默认推荐项 1.1)\n"
+            "• <b>按模型名称/别名</b>：发送 <code>/model sonnet</code>, <code>/model opus</code>, <code>/model 3.8</code>, <code>/model pro</code>, <code>/model gpt</code>\n"
+            "• <b>带模型开启新会话</b>：发送 <code>/new 1.1</code> 或 <code>/new sonnet</code> 直接切换并开启新对话"
         )
-        await update.effective_message.reply_text("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+        if not show_all and len(live_models) > len(display_models):
+            lines.append(f"\n💡 当前展示核心推荐模型。发送 <code>/models all</code> 可查看全部 {len(live_models)} 款底层模型。")
+
+        msg_text = "\n".join(lines)
+        try:
+            await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML)
+        except Exception:
+            plain = re.sub(r"<[^>]+>", "", msg_text)
+            await status_msg.edit_text(plain, parse_mode=None)
 
     async def cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not await self._check_auth(update):
@@ -495,22 +600,51 @@ class TelegramHandlers:
         target_arg = context.args[0].strip()
         matched_opt = get_model_by_identifier(target_arg)
 
+        # If not matched, try force refreshing live models once
         if not matched_opt:
-            valid_list = ", ".join([f"`{m.index}` ({m.display_name})" for m in AVAILABLE_MODELS])
+            try:
+                live_models = await self.agent_cli.get_available_models(force_refresh=True)
+                matched_opt = get_model_by_identifier(target_arg, model_list=live_models)
+            except Exception:
+                pass
+
+        if not matched_opt:
             await update.effective_message.reply_text(
                 f"[ERROR] 未知模型或序号: `{target_arg}`\n\n"
-                f"可选序号范围: 1 ~ {len(AVAILABLE_MODELS)} ({valid_list})\n"
-                "发送 `/models` 查看完整的模型列表与说明。",
+                "可选序号示例: `1.1` (3.8 High), `1.2` (Medium), `1.3` (Low), `4.1` (Pro High), `5.1` (Sonnet) ...\n"
+                "发送 `/models` 查看实时的完整分级模型列表与说明。",
                 parse_mode=ParseMode.MARKDOWN,
             )
             return
 
         self.session_mgr.set_model(chat_id, matched_opt.id)
+        quota_info_text = ""
+        resets_in = ""
+        if matched_opt.reset_time:
+            try:
+                clean_iso = matched_opt.reset_time.replace("Z", "+00:00")
+                reset_dt = datetime.datetime.fromisoformat(clean_iso)
+                now_dt = datetime.datetime.now(datetime.timezone.utc)
+                secs = int((reset_dt - now_dt).total_seconds())
+                if secs <= 0:
+                    resets_in = "Resets soon"
+                else:
+                    h = secs // 3600
+                    m = (secs % 3600) // 60
+                    resets_in = f"Resets in {h}h {m}m" if h > 0 else f"Resets in {m}m"
+            except Exception:
+                pass
+
+        if matched_opt.quota_remaining is not None or matched_opt.reset_time:
+            pct_str = f"{int(round(matched_opt.quota_remaining * 100))}%" if matched_opt.quota_remaining is not None else "0%"
+            suffix = f" ({resets_in})" if resets_in else ""
+            quota_info_text = f"\n• *可用额度*：`Five Hour Limit Remaining: {pct_str}{suffix}`"
+
         reply = (
             f"[OK] *已成功切换模型！*\n\n"
-            f"• *序号*：`#{matched_opt.index}`\n"
+            f"• *序号*：`#{matched_opt.code}`\n"
             f"• *模型*：*{matched_opt.display_name}*\n"
-            f"• *规格*：`{matched_opt.badge}` (映射底座：`{matched_opt.tier}`)\n"
+            f"• *规格*：`{matched_opt.badge}` (映射底座：`{matched_opt.tier}`){quota_info_text}\n"
             f"• *说明*：_{matched_opt.description}_\n\n"
             f"[*] 新建会话（`/new`）将使用此模型进行驱动。"
         )
