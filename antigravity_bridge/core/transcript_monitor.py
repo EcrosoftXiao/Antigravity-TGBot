@@ -398,157 +398,168 @@ class TranscriptMonitor:
         # ---------------------------------------------------------------
 
         try:
-            with open(path, "r", encoding="utf-8", errors="replace") as f:
-                if initial_file_pos > 0:
-                    f.seek(initial_file_pos)
-                    # Discard the first (possibly partial) line from the seek offset
-                    f.readline()
-                while True:
+            while True:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    if initial_file_pos > 0:
+                        f.seek(initial_file_pos)
+                        # Discard the first (possibly partial) line from the seek offset
+                        f.readline()
+                        initial_file_pos = 0
+                    while True:
 
-                    if time.time() - last_activity_time > timeout:
-                        logger.warning(f"Timeout waiting for response in {conversation_id}")
-                        yield ErrorEvent(
-                            step_index=last_seen_step,
-                            error_message="Response timed out after 300 seconds of inactivity.",
-                        )
-                        return
+                        if time.time() - last_activity_time > timeout:
+                            logger.warning(f"Timeout waiting for response in {conversation_id}")
+                            yield ErrorEvent(
+                                step_index=last_seen_step,
+                                error_message="Response timed out after 300 seconds of inactivity.",
+                            )
+                            return
 
-                    line = f.readline()
-                    if line:
-                        line = line.strip()
-                        if not line:
-                            continue
+                        line = f.readline()
+                        if line:
+                            line = line.strip()
+                            if not line:
+                                continue
 
-                        try:
-                            step_data = json.loads(line)
-                        except json.JSONDecodeError:
-                            # Possible partial line write, wait and retry
-                            await asyncio.sleep(0.2)
-                            continue
+                            try:
+                                step_data = json.loads(line)
+                            except json.JSONDecodeError:
+                                # Possible partial line write, wait and retry
+                                await asyncio.sleep(0.2)
+                                continue
 
-                        step_idx = step_data.get("step_index", -1)
-                        if step_idx < start_step_index or step_idx in seen_steps:
-                            continue
+                            step_idx = step_data.get("step_index", -1)
+                            if step_idx < start_step_index or step_idx in seen_steps:
+                                continue
 
-                        seen_steps.add(step_idx)
-                        last_seen_step = max(last_seen_step, step_idx)
-                        last_activity_time = time.time()
+                            seen_steps.add(step_idx)
+                            last_seen_step = max(last_seen_step, step_idx)
+                            last_activity_time = time.time()
 
-                        step_type = step_data.get("type")
-                        source = step_data.get("source")
-                        status = step_data.get("status")
+                            step_type = step_data.get("type")
+                            source = step_data.get("source")
+                            status = step_data.get("status")
 
-                        if step_type == "PLANNER_RESPONSE" and source == "MODEL":
-                            # 1. Thinking
-                            thinking = step_data.get("thinking")
-                            if thinking and isinstance(thinking, str) and thinking.strip():
-                                yield ThinkingEvent(
-                                    step_index=step_idx,
-                                    raw_step=step_data,
-                                    thought=thinking.strip(),
-                                )
-
-                            # 2. Tool Calls
-                            tool_calls = step_data.get("tool_calls")
-                            if tool_calls and isinstance(tool_calls, list):
-                                for tc in tool_calls:
-                                    t_name = tc.get("name", "")
-                                    args = tc.get("args", {})
-                                    if isinstance(args, str):
-                                        try:
-                                            args = json.loads(args)
-                                        except Exception:
-                                            pass
-
-                                    summary = (
-                                        tc.get("toolSummary")
-                                        or (args.get("toolSummary") if isinstance(args, dict) else "")
-                                        or ""
-                                    )
-                                    action = (
-                                        tc.get("toolAction")
-                                        or (args.get("toolAction") if isinstance(args, dict) else "")
-                                        or ""
-                                    )
-                                    yield ToolCallEvent(
+                            if step_type == "PLANNER_RESPONSE" and source == "MODEL":
+                                # 1. Thinking
+                                thinking = step_data.get("thinking")
+                                if thinking and isinstance(thinking, str) and thinking.strip():
+                                    yield ThinkingEvent(
                                         step_index=step_idx,
                                         raw_step=step_data,
-                                        tool_name=t_name,
-                                        tool_summary=summary,
-                                        tool_action=action,
-                                        arguments=args if isinstance(args, dict) else {},
+                                        thought=thinking.strip(),
                                     )
 
-                                    if t_name in ("write_to_file", "replace_file_content"):
-                                        meta = args.get("ArtifactMetadata", {}) if isinstance(args, dict) else {}
-                                        if isinstance(meta, str):
+                                # 2. Tool Calls
+                                tool_calls = step_data.get("tool_calls")
+                                if tool_calls and isinstance(tool_calls, list):
+                                    for tc in tool_calls:
+                                        t_name = tc.get("name", "")
+                                        args = tc.get("args", {})
+                                        if isinstance(args, str):
                                             try:
-                                                meta = json.loads(meta)
+                                                args = json.loads(args)
                                             except Exception:
-                                                meta = {}
-                                        target_file = str(args.get("TargetFile", "") if isinstance(args, dict) else "").strip('"\'')
-                                        req_feedback = False
-                                        if isinstance(meta, dict):
-                                            req_feedback = bool(meta.get("RequestFeedback") or meta.get("request_feedback"))
-                                        file_basename = os.path.basename(target_file) if target_file else ""
-                                        if req_feedback and file_basename != "walkthrough.md":
-                                            summary_text = meta.get("Summary", "") if isinstance(meta, dict) else ""
-                                            yield ArtifactReviewEvent(
-                                                step_index=step_idx,
-                                                raw_step=step_data,
-                                                artifact_path=target_file,
-                                                artifact_name=file_basename,
-                                                summary=summary_text,
-                                                request_feedback=req_feedback,
-                                            )
+                                                pass
 
-                            # 3. Content
-                            content = step_data.get("content")
-                            if content and isinstance(content, str) and content.strip():
-                                yield ContentEvent(
-                                    step_index=step_idx,
-                                    raw_step=step_data,
-                                    content=content.strip(),
-                                )
+                                        summary = (
+                                            tc.get("toolSummary")
+                                            or (args.get("toolSummary") if isinstance(args, dict) else "")
+                                            or ""
+                                        )
+                                        action = (
+                                            tc.get("toolAction")
+                                            or (args.get("toolAction") if isinstance(args, dict) else "")
+                                            or ""
+                                        )
+                                        yield ToolCallEvent(
+                                            step_index=step_idx,
+                                            raw_step=step_data,
+                                            tool_name=t_name,
+                                            tool_summary=summary,
+                                            tool_action=action,
+                                            arguments=args if isinstance(args, dict) else {},
+                                        )
 
-                                # Turn complete when DONE and no tools pending
-                                if status == "DONE" and not tool_calls:
-                                    yield TurnCompleteEvent(
+                                        if t_name in ("write_to_file", "replace_file_content"):
+                                            meta = args.get("ArtifactMetadata", {}) if isinstance(args, dict) else {}
+                                            if isinstance(meta, str):
+                                                try:
+                                                    meta = json.loads(meta)
+                                                except Exception:
+                                                    meta = {}
+                                            target_file = str(args.get("TargetFile", "") if isinstance(args, dict) else "").strip('"\'')
+                                            req_feedback = False
+                                            if isinstance(meta, dict):
+                                                req_feedback = bool(meta.get("RequestFeedback") or meta.get("request_feedback"))
+                                            file_basename = os.path.basename(target_file) if target_file else ""
+                                            if req_feedback and file_basename != "walkthrough.md":
+                                                summary_text = meta.get("Summary", "") if isinstance(meta, dict) else ""
+                                                yield ArtifactReviewEvent(
+                                                    step_index=step_idx,
+                                                    raw_step=step_data,
+                                                    artifact_path=target_file,
+                                                    artifact_name=file_basename,
+                                                    summary=summary_text,
+                                                    request_feedback=req_feedback,
+                                                )
+
+                                # 3. Content
+                                content = step_data.get("content")
+                                if content and isinstance(content, str) and content.strip():
+                                    yield ContentEvent(
                                         step_index=step_idx,
                                         raw_step=step_data,
-                                        final_content=content.strip(),
+                                        content=content.strip(),
                                     )
-                                    return
 
-                        elif step_type == "GENERIC":
-                            # Tool Output
-                            out = step_data.get("content", "")
-                            yield ToolResultEvent(
-                                step_index=step_idx,
-                                raw_step=step_data,
-                                output_preview=str(out)[:200],
-                            )
+                                    # Turn complete when DONE and no tools pending
+                                    if status == "DONE" and not tool_calls:
+                                        yield TurnCompleteEvent(
+                                            step_index=step_idx,
+                                            raw_step=step_data,
+                                            final_content=content.strip(),
+                                        )
+                                        return
 
-                        elif step_type == "ERROR_MESSAGE" or "interrupted" in str(step_data.get("content", "")).lower():
-                            # Interruption detected (e.g. user clicked Stop in desktop IDE client)
-                            err_msg = str(step_data.get("content", "")).strip() or "任务已被客户端中断 (Stop)"
-                            yield ErrorEvent(
-                                step_index=step_idx,
-                                error_message=err_msg,
-                            )
-                            return
+                            elif step_type == "GENERIC":
+                                # Tool Output
+                                out = step_data.get("content", "")
+                                yield ToolResultEvent(
+                                    step_index=step_idx,
+                                    raw_step=step_data,
+                                    output_preview=str(out)[:200],
+                                )
 
-                        elif step_type == "USER_INPUT" and step_idx > start_step_index:
-                            # A new user turn was entered externally while this turn was waiting
-                            yield ErrorEvent(
-                                step_index=step_idx,
-                                error_message="已收到新指令，当前等待已中止",
-                            )
-                            return
+                            elif step_type == "ERROR_MESSAGE" or "interrupted" in str(step_data.get("content", "")).lower():
+                                # Interruption detected (e.g. user clicked Stop in desktop IDE client)
+                                err_msg = str(step_data.get("content", "")).strip() or "任务已被客户端中断 (Stop)"
+                                yield ErrorEvent(
+                                    step_index=step_idx,
+                                    error_message=err_msg,
+                                )
+                                return
 
-                    else:
-                        # No new line right now, sleep briefly
-                        await asyncio.sleep(poll_interval)
+                            elif step_type == "USER_INPUT" and step_idx > start_step_index:
+                                # A new user turn was entered externally while this turn was waiting
+                                yield ErrorEvent(
+                                    step_index=step_idx,
+                                    error_message="已收到新指令，当前等待已中止",
+                                )
+                                return
+
+                        else:
+                            # No new line right now, sleep briefly
+                            await asyncio.sleep(poll_interval)
+
+                            # Check for file compaction/rotation
+                            try:
+                                current_stat = path.stat()
+                                if current_stat.st_size < f.tell() or current_stat.st_ino != os.fstat(f.fileno()).st_ino:
+                                    logger.info(f"Transcript file rotated/compacted for {conversation_id}. Re-opening...")
+                                    break
+                            except Exception:
+                                pass
 
         except Exception as exc:
             logger.exception(f"Error reading transcript {path}: {exc}")
