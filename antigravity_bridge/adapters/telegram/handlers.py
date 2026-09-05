@@ -742,13 +742,24 @@ class TelegramHandlers:
             if editor:
                 await editor.edit(f"❌ *发送选项失败：* `{exc}`", force=True)
 
+    async def _safe_answer_query(self, query: Any, text: Optional[str] = None, show_alert: bool = False) -> None:
+        """Safely acknowledge callback query without raising on expired queries."""
+        try:
+            if text:
+                await query.answer(text=text, show_alert=show_alert)
+            else:
+                await query.answer()
+        except Exception as exc:
+            logger.debug(f"Telegram callback query acknowledgment ignored: {exc}")
+
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle inline button clicks for question selections and toggles."""
         query = update.callback_query
         if not query:
             return
 
-        await query.answer()
+        # Acknowledge the callback query safely
+        await self._safe_answer_query(query)
 
         if not self.is_authorized(update):
             return
@@ -762,7 +773,7 @@ class TelegramHandlers:
                 await query.edit_message_reply_markup(reply_markup=None)
             except Exception:
                 pass
-            await query.answer("⚠️ 选项已失效或已处理完成", show_alert=True)
+            await self._safe_answer_query(query, "⚠️ 选项已失效或已处理完成", show_alert=True)
             return
 
         if data.startswith("q_sel:"):
@@ -800,13 +811,15 @@ class TelegramHandlers:
 
                 text, markup = self._render_question_content(pending)
                 editor = pending.get("editor")
-                if editor:
-                    await editor.edit(text, force=True, parse_mode=ParseMode.HTML, reply_markup=markup)
-                else:
-                    try:
-                        await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
-                    except Exception:
-                        pass
+                try:
+                    await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=markup)
+                    if editor:
+                        editor.last_text = text
+                        editor._last_markup = markup
+                except Exception as exc:
+                    logger.debug(f"Direct callback message edit failed, falling back to editor: {exc}")
+                    if editor:
+                        await editor.edit(text, force=True, parse_mode=ParseMode.HTML, reply_markup=markup)
 
         elif data == "q_sub":
             # Submit multi-select choices
@@ -814,7 +827,7 @@ class TelegramHandlers:
             selections = pending.get("selections", {})
 
             if not any(selections.values()):
-                await query.answer("请先勾选至少一个选项，或点击【跳过】", show_alert=True)
+                await self._safe_answer_query(query, "请先勾选至少一个选项，或点击【跳过】", show_alert=True)
                 return
 
             ans_lines = []
