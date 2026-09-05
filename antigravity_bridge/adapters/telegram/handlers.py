@@ -7,6 +7,8 @@ import logging
 import os
 import re
 import time
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
@@ -136,7 +138,11 @@ class TelegramHandlers:
             "• `/send` : 一次性将缓冲区内所有消息合并提交给 Agent 执行\n"
             "• `/cancel` : 清空缓冲区并退出批量模式\n\n"
             "🛑 *任务控制*\n"
-            "• `/stop` : 中断或请求停止当前正在执行的任务\n"
+            "• `/stop` : 中断或请求停止当前正在执行的任务\n\n"
+            "📁 *文件与图片交互*\n"
+            "• `/getfile <路径>` (或 `/get`) : 获取并下载工作区或指定路径的文件\n"
+            "• 直接发送照片/截图：Bot 自动保存并派发给 Agent 查看与分析\n"
+            "• 直接发送文件/文档：Bot 自动保存并派发给 Agent 解析\n"
         )
         await update.effective_message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -213,9 +219,9 @@ class TelegramHandlers:
                 target_title = chosen.title
             else:
                 await update.effective_message.reply_text(
-                    f"⚠️ 序号 `#{clean_num}` 超出范围：当前本地记录共有 {len(convs)} 个会话（请输入 1 ~ {len(convs)}）。\n"
-                    f"请先发送 `/sessions` 查看列表。",
-                    parse_mode=ParseMode.MARKDOWN,
+                    f"⚠️ 序号 #{clean_num} 超出范围：当前本地记录共有 {len(convs)} 个会话（请输入 1 ~ {len(convs)}）。\n"
+                    f"请先发送 /sessions 查看列表。",
+                    parse_mode=None,
                 )
                 return
         else:
@@ -226,10 +232,10 @@ class TelegramHandlers:
                 target_id = matches[0].conversation_id
                 target_title = matches[0].title
             elif len(matches) > 1:
-                matched_lines = "\n".join([f"• `{c.conversation_id[:8]}` ({c.title})" for c in matches[:5]])
+                matched_lines = "\n".join([f"• <code>{html.escape(c.conversation_id[:8])}</code> ({html.escape(c.title)})" for c in matches[:5]])
                 await update.effective_message.reply_text(
-                    f"⚠️ 匹配到多个以 `{target_arg}` 开头的会话：\n{matched_lines}\n请提供更多字符以精确定位。",
-                    parse_mode=ParseMode.MARKDOWN,
+                    f"⚠️ 匹配到多个以 <code>{html.escape(target_arg)}</code> 开头的会话：\n{matched_lines}\n请提供更多字符以精确定位。",
+                    parse_mode=ParseMode.HTML,
                 )
                 return
             else:
@@ -243,15 +249,16 @@ class TelegramHandlers:
                 await self.agent_cli.get_metadata(target_id)
 
             self.session_mgr.bind_conversation(chat_id, target_id)
-            title_desc = f"\n💬 _{target_title}_" if target_title else ""
+            clean_t = re.sub(r"\s+", " ", target_title).strip()
+            title_desc = f"\n💬 <i>{html.escape(clean_t)}</i>" if clean_t else ""
             await update.effective_message.reply_text(
-                f"🔗 *已成功绑定到会话：*\n`{target_id}`{title_desc}",
-                parse_mode=ParseMode.MARKDOWN,
+                f"🔗 <b>已成功绑定到会话：</b>\n<code>{html.escape(target_id)}</code>{title_desc}",
+                parse_mode=ParseMode.HTML,
             )
         except Exception as exc:
             await update.effective_message.reply_text(
-                f"❌ 绑定会话 `{target_id}` 失败：未找到该会话记录或会话已失效。\n`{exc}`",
-                parse_mode=ParseMode.MARKDOWN,
+                f"❌ 绑定会话失败：未找到该会话记录或会话已失效。\n{exc}",
+                parse_mode=None,
             )
 
     async def cmd_sessions(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -266,27 +273,38 @@ class TelegramHandlers:
         try:
             convs = await self.agent_cli.list_conversations(limit=limit)
             if not convs:
-                await status_msg.edit_text("未在 `~/.gemini/antigravity/brain` 中找到现有会话记录。")
+                await status_msg.edit_text("未在 <code>~/.gemini/antigravity/brain</code> 中找到现有会话记录。", parse_mode=ParseMode.HTML)
                 return
 
             chat_id = update.effective_chat.id
             active_id = self.session_mgr.get_session(chat_id).active_conversation_id
 
-            lines = ["📋 *最近的 Antigravity 本地会话列表：*\n"]
+            lines = ["📋 <b>最近的 Antigravity 本地会话列表：</b>\n"]
             for i, c in enumerate(convs, 1):
                 marker = "⭐ " if c.conversation_id == active_id else "• "
                 time_str = c.created_at.replace("T", " ")[:19] if c.created_at else ""
+                clean_title = re.sub(r"\s+", " ", c.title).strip()
+                if len(clean_title) > 60:
+                    clean_title = clean_title[:60].rstrip() + "..."
+                escaped_title = html.escape(clean_title)
+                escaped_id = html.escape(c.conversation_id)
+                escaped_time = html.escape(time_str)
+
                 lines.append(
-                    f"{marker}*#{i}* `{c.conversation_id}`\n"
-                    f"   🕒 _{time_str}_ | 💬 {c.title}\n"
+                    f"{marker}<b>#{i}</b> <code>{escaped_id}</code>\n"
+                    f"   🕒 <i>{escaped_time}</i> | 💬 {escaped_title}\n"
                 )
 
-            lines.append("💡 发送 `/session <序号>`（如 `/session 1`）或 `/session <会话ID>` 即可快速绑定。")
+            lines.append("💡 发送 <code>/session &lt;序号&gt;</code>（如 <code>/session 1</code>）或 <code>/session &lt;会话ID&gt;</code> 即可快速绑定。")
             msg_text = "\n".join(lines)
-            await status_msg.edit_text(msg_text, parse_mode=ParseMode.MARKDOWN)
+            try:
+                await status_msg.edit_text(msg_text, parse_mode=ParseMode.HTML)
+            except Exception:
+                plain_text = re.sub(r"<[^>]+>", "", msg_text)
+                await status_msg.edit_text(plain_text, parse_mode=None)
         except Exception as exc:
             logger.exception("Error listing sessions")
-            await status_msg.edit_text(f"❌ 获取会话列表失败：`{exc}`", parse_mode=ParseMode.MARKDOWN)
+            await status_msg.edit_text(f"❌ 获取会话列表失败：{exc}", parse_mode=None)
 
     # ------------------------------------------------------------------
     # Command: /history [limit or session_id] [limit]
@@ -1442,6 +1460,178 @@ class TelegramHandlers:
 
         await self._dispatch_agent_prompt(update, text)
 
+    def _get_user_upload_dir(self, conv_id: Optional[str]) -> Path:
+        """Return Antigravity native .user_uploaded artifact directory for zero-permission access."""
+        if conv_id:
+            upload_dir = self.agent_cli.gemini_dir / "brain" / conv_id / ".user_uploaded"
+        else:
+            upload_dir = self.agent_cli.gemini_dir / "brain" / "_user_uploaded"
+        upload_dir.mkdir(parents=True, exist_ok=True)
+        return upload_dir
+
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming photos from user, save directly to Antigravity native artifacts, and dispatch to Agent."""
+        if not await self._check_auth(update):
+            return
+
+        photos = update.effective_message.photo
+        if not photos:
+            return
+
+        chat_id = update.effective_chat.id
+        photo = photos[-1]  # Highest resolution
+        session = self.session_mgr.get_session(chat_id)
+        conv_id = session.active_conversation_id
+
+        status_msg = await update.effective_message.reply_text(
+            "📥 <i>正在接收并下载图片...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        editor = ThrottledEditor(status_msg, min_interval=1.2)
+
+        timestamp_ms = int(time.time() * 1000)
+        ext = ".jpg"
+
+        # Storing directly inside ~/.gemini/antigravity/brain/<conv_id>/.user_uploaded
+        # completely avoids Antigravity's "outside workspace" permission confirmation prompts.
+        upload_dir = self._get_user_upload_dir(conv_id)
+        target_path = upload_dir / f"media_{timestamp_ms}{ext}"
+
+        try:
+            tg_file = await photo.get_file()
+            await tg_file.download_to_drive(custom_path=str(target_path))
+        except Exception as e:
+            logger.exception("Failed to download photo from Telegram")
+            await editor.edit(f"❌ 图片下载失败：{e}", force=True, parse_mode=None)
+            return
+
+        caption = (update.effective_message.caption or "").strip()
+        user_text = caption or "请查看并分析这张图片。"
+        prompt = (
+            f"{user_text}\n\n"
+            f"<ADDITIONAL_METADATA>\n"
+            f"The user has uploaded 1 image(s):\n"
+            f"- {target_path.resolve()}\n"
+            f"You can embed this image in an artifact if you need the USER to review it.\n"
+            f"</ADDITIONAL_METADATA>"
+        )
+
+        await self._dispatch_agent_prompt(update, prompt, editor=editor)
+
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle incoming documents/files from user, save directly to Antigravity native artifacts, and dispatch to Agent."""
+        if not await self._check_auth(update):
+            return
+
+        doc = update.effective_message.document
+        if not doc:
+            return
+
+        chat_id = update.effective_chat.id
+        session = self.session_mgr.get_session(chat_id)
+        conv_id = session.active_conversation_id
+
+        raw_name = doc.file_name or f"file_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{doc.file_unique_id[:6]}"
+        clean_name = re.sub(r'[/\\?%*:|"<>]', '_', raw_name)
+        mime_type = doc.mime_type or "application/octet-stream"
+        is_image = mime_type.startswith("image/") or clean_name.lower().endswith(
+            (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp")
+        )
+
+        file_size_mb = (doc.file_size or 0) / (1024 * 1024)
+        size_str = f"{file_size_mb:.2f} MB" if file_size_mb >= 1.0 else f"{(doc.file_size or 0) / 1024:.1f} KB"
+
+        status_msg = await update.effective_message.reply_text(
+            f"📥 <i>正在下载文件：<b>{html.escape(clean_name)}</b> ({size_str})...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        editor = ThrottledEditor(status_msg, min_interval=1.2)
+
+        timestamp_ms = int(time.time() * 1000)
+        ext = Path(clean_name).suffix or (".jpg" if is_image else "")
+
+        upload_dir = self._get_user_upload_dir(conv_id)
+        target_path = upload_dir / (f"media_{timestamp_ms}{ext}" if is_image else clean_name)
+
+        try:
+            tg_file = await doc.get_file()
+            await tg_file.download_to_drive(custom_path=str(target_path))
+        except Exception as e:
+            logger.exception("Failed to download document from Telegram")
+            await editor.edit(f"❌ 文件下载失败：{e}", force=True, parse_mode=None)
+            return
+
+        caption = (update.effective_message.caption or "").strip()
+        if is_image:
+            user_text = caption or "请查看并分析这张图片。"
+            prompt = (
+                f"{user_text}\n\n"
+                f"<ADDITIONAL_METADATA>\n"
+                f"The user has uploaded 1 image(s):\n"
+                f"- {target_path.resolve()}\n"
+                f"You can embed this image in an artifact if you need the USER to review it.\n"
+                f"</ADDITIONAL_METADATA>"
+            )
+        else:
+            user_text = caption or "请读取并分析这个文件。"
+            prompt = (
+                f"{user_text}\n\n"
+                f"<ADDITIONAL_METADATA>\n"
+                f"The user has uploaded 1 file(s):\n"
+                f"- {target_path.resolve()} (name: {clean_name}, type: {mime_type}, size: {size_str})\n"
+                f"</ADDITIONAL_METADATA>"
+            )
+
+        await self._dispatch_agent_prompt(update, prompt, editor=editor)
+
+    async def cmd_getfile(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Download and send a specified local file from workspace to Telegram."""
+        if not await self._check_auth(update):
+            return
+
+        args = context.args or []
+        if not args:
+            await update.effective_message.reply_text(
+                "ℹ️ *用法*：`/getfile <文件路径>`\n例如：`/getfile README.md` 或绝对路径",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        req_path = " ".join(args).strip()
+        chat_id = update.effective_chat.id
+        session = self.session_mgr.get_session(chat_id)
+        target = Path(req_path)
+        if not target.is_absolute():
+            target = Path(session.workspace or self.default_workspace) / target
+
+        target = target.resolve()
+        if not target.is_file():
+            await update.effective_message.reply_text(
+                f"❌ 未找到指定文件：`{target}`",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
+
+        bot = getattr(self, "bot", None) or (update.effective_message.get_bot() if update.effective_message else None)
+        status_msg = await update.effective_message.reply_text("📤 正在上传发送文件...")
+
+        ext = target.suffix.lower()
+        if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+            success = await self._send_image_file(chat_id, str(target), caption=f"📄 <code>{html.escape(target.name)}</code>", bot=bot)
+        else:
+            success = await self._send_document_file(chat_id, str(target), caption=f"📄 <code>{html.escape(target.name)}</code>", bot=bot)
+
+        if success:
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+        else:
+            try:
+                await status_msg.edit_text("❌ 发送文件失败，请检查文件权限或大小（Telegram 单文件上限 50MB）。")
+            except Exception:
+                pass
+
     async def _send_image_file(
         self,
         chat_id: int,
@@ -1469,6 +1659,34 @@ class TelegramHandlers:
             logger.warning(f"Failed to send photo {img_path} to chat {chat_id}: {e}")
             return False
 
+    async def _send_document_file(
+        self,
+        chat_id: int,
+        file_path: str,
+        caption: Optional[str] = None,
+        bot: Optional[Any] = None,
+    ) -> bool:
+        """Send a local document/file to the user via Telegram send_document."""
+        if not os.path.isfile(file_path):
+            return False
+        bot = bot or getattr(self, "bot", None)
+        if not bot:
+            return False
+        try:
+            with open(file_path, "rb") as doc_f:
+                await bot.send_document(
+                    chat_id=chat_id,
+                    document=doc_f,
+                    filename=os.path.basename(file_path),
+                    caption=caption or "",
+                    parse_mode=ParseMode.HTML if caption else None,
+                )
+            logger.info(f"Successfully sent document {file_path} to chat {chat_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send document {file_path} to chat {chat_id}: {e}")
+            return False
+
     async def _stream_turn_events(
         self,
         chat_id: int,
@@ -1479,7 +1697,7 @@ class TelegramHandlers:
     ) -> None:
         """Stream real-time thinking, tool calls, and final response from transcript."""
         self.active_editors[chat_id] = editor
-        sent_images: Set[str] = set()
+        sent_files: Set[str] = set()
         try:
             final_response = ""
             current_status = "🤖 正在处理中..."
@@ -1533,14 +1751,18 @@ class TelegramHandlers:
                     current_status = "🔄 正在处理工具执行结果..."
                     await editor.edit(current_status, parse_mode=None, reply_markup=None)
 
-                    # Auto-detect generated image paths and send to Telegram
+                    # Auto-detect generated image and document paths and send to Telegram
                     out_text = str(event.raw_step.get("content", ""))
-                    img_matches = re.findall(r"(/[\w./-]+\.(?:png|jpg|jpeg|webp|gif))", out_text)
-                    for match in img_matches:
-                        if match not in sent_images and os.path.isfile(match):
-                            sent_images.add(match)
+                    file_matches = re.findall(r"(/[\w./-]+\.(?:png|jpg|jpeg|webp|gif|pdf|csv|xlsx|zip|docx|tar\.gz))", out_text)
+                    for match in file_matches:
+                        if match not in sent_files and os.path.isfile(match):
+                            sent_files.add(match)
                             bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
-                            await self._send_image_file(chat_id, match, caption="🎨 <b>Agent 已生成并发送图片</b>", bot=bot)
+                            ext = Path(match).suffix.lower()
+                            if ext in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
+                                await self._send_image_file(chat_id, match, caption="🎨 <b>Agent 已生成并发送图片</b>", bot=bot)
+                            else:
+                                await self._send_document_file(chat_id, match, caption=f"📦 <b>Agent 已生成并发送文件：</b> <code>{html.escape(os.path.basename(match))}</code>", bot=bot)
 
                 elif isinstance(event, TurnCompleteEvent):
                     self.pending_questions.pop(chat_id, None)
@@ -1560,10 +1782,18 @@ class TelegramHandlers:
                 # Auto-detect any markdown images in final response
                 md_img_matches = re.findall(r"!\[(.*?)\]\((/[^\)]+\.(?:png|jpg|jpeg|webp|gif))\)", final_response)
                 for caption, path in md_img_matches:
-                    if path not in sent_images and os.path.isfile(path):
-                        sent_images.add(path)
+                    if path not in sent_files and os.path.isfile(path):
+                        sent_files.add(path)
                         bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
                         await self._send_image_file(chat_id, path, caption=caption or None, bot=bot)
+
+                # Auto-detect any markdown document download links in final response
+                md_doc_matches = re.findall(r"\[(.*?)\]\((?:file://)?(/[^\)]+\.(?:pdf|csv|xlsx|zip|docx|tar\.gz))\)", final_response)
+                for caption, path in md_doc_matches:
+                    if path not in sent_files and os.path.isfile(path):
+                        sent_files.add(path)
+                        bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
+                        await self._send_document_file(chat_id, path, caption=f"📦 <b>文件下载：</b> <code>{html.escape(os.path.basename(path))}</code>", bot=bot)
 
                 chunks = split_message(final_response, max_length=4000)
                 # First chunk edits the status message
@@ -1609,18 +1839,24 @@ class TelegramHandlers:
                 self.active_tasks.pop(chat_id, None)
                 self.active_editors.pop(chat_id, None)
 
-    async def _dispatch_agent_prompt(self, update: Update, prompt: str) -> None:
+    async def _dispatch_agent_prompt(
+        self,
+        update: Update,
+        prompt: str,
+        editor: Optional[ThrottledEditor] = None,
+    ) -> None:
         chat_id = update.effective_chat.id
         session = self.session_mgr.get_session(chat_id)
 
         conv_id = session.active_conversation_id
         start_step = 0
 
-        status_msg = await update.effective_message.reply_text(
-            "⏳ *正在连接本地 Antigravity Agent...*",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        editor = ThrottledEditor(status_msg, min_interval=1.2)
+        if not editor:
+            status_msg = await update.effective_message.reply_text(
+                "⏳ *正在连接本地 Antigravity Agent...*",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            editor = ThrottledEditor(status_msg, min_interval=1.2)
 
         current_task = asyncio.current_task()
         if current_task:
