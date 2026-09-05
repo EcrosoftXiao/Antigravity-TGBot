@@ -149,6 +149,30 @@ class AgentCliBridge:
             )
         return self._cached_ls_address
 
+    def _ensure_project_settings(self, pfile: Path, abs_cwd: str) -> None:
+        """Ensure project configuration allows eager commands and file access."""
+        if pfile.is_file():
+            try:
+                with open(pfile, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                settings = data.setdefault("settings", {})
+                modified = False
+                if settings.get("fileAccessPolicy") != "AGENT_SETTING_POLICY_ALLOW":
+                    settings["fileAccessPolicy"] = "AGENT_SETTING_POLICY_ALLOW"
+                    modified = True
+                if settings.get("autoExecutionPolicy") != "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER":
+                    settings["autoExecutionPolicy"] = "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER"
+                    modified = True
+                if settings.get("sandboxMode") is not False:
+                    settings["sandboxMode"] = False
+                    modified = True
+                if modified:
+                    with open(pfile, "w", encoding="utf-8") as f:
+                        json.dump(data, f, indent=2, ensure_ascii=False)
+                    logger.info(f"Updated permission policy for project file {pfile.name} ({abs_cwd})")
+            except Exception as exc:
+                logger.warning(f"Failed to update project settings for {pfile.name}: {exc}")
+
     def _find_or_create_project_id_for_dir(self, cwd: str) -> Optional[str]:
         """Resolve or automatically register Antigravity project ID for a directory."""
         projects_dir = self.gemini_dir.parent / "config" / "projects"
@@ -156,7 +180,9 @@ class AgentCliBridge:
             projects_dir.mkdir(parents=True, exist_ok=True)
 
         abs_cwd = os.path.abspath(cwd)
-        matches: List[Tuple[int, str]] = []
+        home_dir = str(Path.home().resolve())
+        exact_matches: List[Tuple[int, str]] = []
+        sub_matches: List[Tuple[int, str]] = []
         fallback: Optional[str] = None
 
         for p in projects_dir.glob("*.json"):
@@ -170,40 +196,27 @@ class AgentCliBridge:
                         f_uri = res.get("gitFolder", {}).get("folderUri", "")
                         if f_uri.startswith("file://"):
                             f_path = os.path.abspath(f_uri[7:])
-                            if abs_cwd == f_path or abs_cwd.startswith(f_path + "/"):
-                                matches.append((len(f_path), p_id))
+                            if abs_cwd == f_path:
+                                exact_matches.append((len(f_path), p_id))
+                            elif abs_cwd.startswith(f_path + "/") and f_path != home_dir and f_path != "/":
+                                sub_matches.append((len(f_path), p_id))
             except Exception:
                 continue
 
-        if matches:
-            matches.sort(key=lambda x: x[0], reverse=True)
-            matched_pid = matches[0][1]
-            # Ensure matched project configuration has eager execution and allow policies
-            matched_pfile = projects_dir / f"{matched_pid}.json"
-            if matched_pfile.is_file():
-                try:
-                    with open(matched_pfile, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    settings = data.setdefault("settings", {})
-                    modified = False
-                    if settings.get("fileAccessPolicy") != "AGENT_SETTING_POLICY_ALLOW":
-                        settings["fileAccessPolicy"] = "AGENT_SETTING_POLICY_ALLOW"
-                        modified = True
-                    if settings.get("autoExecutionPolicy") != "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER":
-                        settings["autoExecutionPolicy"] = "CASCADE_COMMANDS_AUTO_EXECUTION_EAGER"
-                        modified = True
-                    if settings.get("sandboxMode") is not False:
-                        settings["sandboxMode"] = False
-                        modified = True
-                    if modified:
-                        with open(matched_pfile, "w", encoding="utf-8") as f:
-                            json.dump(data, f, indent=2, ensure_ascii=False)
-                        logger.info(f"Updated permission policy for project {matched_pid} ({abs_cwd})")
-                except Exception as exc:
-                    logger.warning(f"Failed to update project settings for {matched_pid}: {exc}")
+        # 1. Exact directory match
+        if exact_matches:
+            matched_pid = exact_matches[0][1]
+            self._ensure_project_settings(projects_dir / f"{matched_pid}.json", abs_cwd)
             return matched_pid
 
-        # Auto-register new project config if directory not known to Antigravity
+        # 2. Sub-folder of an actual non-home git repository
+        if sub_matches:
+            sub_matches.sort(key=lambda x: x[0], reverse=True)
+            matched_pid = sub_matches[0][1]
+            self._ensure_project_settings(projects_dir / f"{matched_pid}.json", abs_cwd)
+            return matched_pid
+
+        # 3. Auto-register new dedicated project config for this directory
         try:
             import uuid
             new_pid = str(uuid.uuid4())
