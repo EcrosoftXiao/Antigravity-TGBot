@@ -30,6 +30,7 @@ from antigravity_bridge.core.models import (
 from antigravity_bridge.core.session_manager import SessionManager
 from antigravity_bridge.core.transcript_monitor import TranscriptMonitor
 from .formatter import ThrottledEditor, split_message
+from .progress_tracker import TurnProgressTracker, format_duration
 
 logger = logging.getLogger(__name__)
 
@@ -2052,17 +2053,34 @@ class TelegramHandlers:
         """Stream real-time thinking, tool calls, and final response from transcript."""
         self.active_editors[chat_id] = editor
         sent_files: Set[str] = set()
+        tracker = TurnProgressTracker(conversation_id=conv_id)
+
+        async def _heartbeat_ticker():
+            while True:
+                try:
+                    await asyncio.sleep(1.2)
+                    if chat_id in self.pending_questions:
+                        continue
+                    status_html = tracker.format_status_html()
+                    await editor.edit(status_html, parse_mode=ParseMode.HTML)
+                except asyncio.CancelledError:
+                    break
+                except Exception as ticker_err:
+                    logger.debug(f"Heartbeat ticker error: {ticker_err}")
+
+        ticker_task = asyncio.create_task(_heartbeat_ticker())
+
         try:
             final_response = ""
-            current_status = "[RUNNING] 正在处理中..."
+            current_status = tracker.format_status_html()
+            await editor.edit(current_status, parse_mode=ParseMode.HTML)
 
             async for event in self.monitor.stream_events(conv_id, start_step_index=start_step):
                 if isinstance(event, ThinkingEvent):
                     if chat_id in self.pending_questions:
                         continue
-                    clean_thought = html.escape(event.thought.strip().replace("\n", " ")[:80])
-                    current_status = f"[THINKING] <b>思考中：</b> <i>{clean_thought}...</i>"
-                    await editor.edit(current_status, parse_mode=ParseMode.HTML)
+                    tracker.on_thinking(event.thought)
+                    await editor.edit(tracker.format_status_html(), parse_mode=ParseMode.HTML)
 
                 elif isinstance(event, ToolCallEvent):
                     tool_name = event.tool_name or "tool"
@@ -2094,16 +2112,18 @@ class TelegramHandlers:
                     if chat_id in self.pending_questions:
                         continue
 
-                    action = event.tool_action or event.tool_summary or ""
-                    clean_tool = html.escape(tool_name)
-                    clean_detail = f" ({html.escape(action)})" if action else ""
-                    current_status = f"[TOOL] <b>正在执行工具：</b> <code>{clean_tool}</code>{clean_detail}..."
-                    await editor.edit(current_status, parse_mode=ParseMode.HTML)
+                    tracker.on_tool_call(
+                        tool_name=tool_name,
+                        tool_summary=event.tool_summary,
+                        tool_action=event.tool_action,
+                        arguments=event.arguments,
+                    )
+                    await editor.edit(tracker.format_status_html(), parse_mode=ParseMode.HTML)
 
                 elif isinstance(event, ToolResultEvent):
                     self.pending_questions.pop(chat_id, None)
-                    current_status = "[RESULT] 正在处理工具执行结果..."
-                    await editor.edit(current_status, parse_mode=None, reply_markup=None)
+                    tracker.on_tool_result()
+                    await editor.edit(tracker.format_status_html(), parse_mode=ParseMode.HTML, reply_markup=None)
 
                     # Auto-detect generated image and document paths and send to Telegram
                     out_text = str(event.raw_step.get("content", ""))
@@ -2120,6 +2140,7 @@ class TelegramHandlers:
 
                 elif isinstance(event, TurnCompleteEvent):
                     self.pending_questions.pop(chat_id, None)
+                    tracker.on_turn_complete()
                     final_response = event.final_content
                     break
 
@@ -2186,13 +2207,15 @@ class TelegramHandlers:
                     except Exception:
                         await editor.edit("[OK] <b>图片/文件已发送。</b>", force=True, parse_mode=ParseMode.HTML)
                 else:
-                    await editor.edit("[OK] 任务已执行完成（无文本输出内容）。", force=True)
+                    elapsed_str = format_duration(time.time() - tracker.turn_start_time)
+                    await editor.edit(f"[OK] 任务已执行完成（无文本输出内容，耗时: {elapsed_str}）。", force=True)
 
         except asyncio.CancelledError:
             logger.info(f"Task for chat {chat_id} was cancelled by /stop")
             try:
+                elapsed_str = format_duration(time.time() - tracker.turn_start_time)
                 await editor.edit(
-                    "[STOP] <b>任务已被用户手动停止。</b>",
+                    f"[STOP] <b>任务已被用户手动停止。</b> (总耗时: {elapsed_str})",
                     force=True,
                     parse_mode=ParseMode.HTML,
                     reply_markup=None,
@@ -2204,6 +2227,11 @@ class TelegramHandlers:
             logger.exception("Error executing prompt on Antigravity Agent")
             await editor.edit(f"[ERROR] *执行失败：* `{exc}`", force=True)
         finally:
+            ticker_task.cancel()
+            try:
+                await ticker_task
+            except asyncio.CancelledError:
+                pass
             if chat_id not in self.pending_questions:
                 self.active_tasks.pop(chat_id, None)
                 self.active_editors.pop(chat_id, None)
