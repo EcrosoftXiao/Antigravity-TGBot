@@ -2381,23 +2381,28 @@ class TelegramHandlers:
                                         or "USER" in stop_reason
                                     ):
                                         is_stopped = True
-                                    elif tracker.phase == Phase.INIT and (now - tracker.turn_start_time > 5.0):
-                                        # If stuck in INIT for > 5s: check if the turn at start_step was terminated
-                                        # without generating any model response
-                                        # E.g. start_step - 1 was USER_INPUT, and no running step exists for start_step
-                                        user_step_idx = start_step - 1
-                                        if 0 <= user_step_idx < len(steps):
-                                            target_user_step = steps[user_step_idx]
-                                            # If subsequent steps are already newer USER_INPUT or no step generated at all,
-                                            # and the active generation is not running on this step:
+                                    else:
+                                        # Universal check: if any step >= start_step is a newer USER_INPUT,
+                                        # or has an error with "context canceled" / "interrupt"
+                                        for s in steps[start_step:]:
+                                            s_type = s.get("type", "")
+                                            if s_type == "CORTEX_STEP_TYPE_USER_INPUT":
+                                                is_stopped = True
+                                                break
+                                            
+                                            if s.get("status") == "CORTEX_STEP_STATUS_ERROR":
+                                                err_obj = s.get("error", {})
+                                                err_str = str(err_obj).lower()
+                                                if "context canceled" in err_str or "interrupt" in err_str:
+                                                    is_stopped = True
+                                                    break
+
+                                        if not is_stopped and tracker.phase == Phase.INIT and (now - tracker.turn_start_time > 5.0):
+                                            # If stuck in INIT for > 5s: check if no active generation is running
                                             has_generating_child = False
                                             for s in steps[start_step:]:
                                                 if s.get("status") in ("CORTEX_STEP_STATUS_RUNNING", "CORTEX_STEP_STATUS_GENERATING"):
                                                     has_generating_child = True
-                                                    break
-                                                # If another USER_INPUT exists after start_step, this turn was superseded/stopped
-                                                if s.get("type") == "CORTEX_STEP_TYPE_USER_INPUT":
-                                                    is_stopped = True
                                                     break
                                             if not has_generating_child and c_status == "CASCADE_RUN_STATUS_IDLE":
                                                 is_stopped = True
