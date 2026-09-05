@@ -1442,6 +1442,33 @@ class TelegramHandlers:
 
         await self._dispatch_agent_prompt(update, text)
 
+    async def _send_image_file(
+        self,
+        chat_id: int,
+        img_path: str,
+        caption: Optional[str] = None,
+        bot: Optional[Any] = None,
+    ) -> bool:
+        """Send a local image file to the user via Telegram send_photo."""
+        if not os.path.isfile(img_path):
+            return False
+        bot = bot or getattr(self, "bot", None)
+        if not bot:
+            return False
+        try:
+            with open(img_path, "rb") as photo_f:
+                await bot.send_photo(
+                    chat_id=chat_id,
+                    photo=photo_f,
+                    caption=caption or "",
+                    parse_mode=ParseMode.HTML if caption else None,
+                )
+            logger.info(f"Successfully sent photo {img_path} to chat {chat_id}")
+            return True
+        except Exception as e:
+            logger.warning(f"Failed to send photo {img_path} to chat {chat_id}: {e}")
+            return False
+
     async def _stream_turn_events(
         self,
         chat_id: int,
@@ -1452,6 +1479,7 @@ class TelegramHandlers:
     ) -> None:
         """Stream real-time thinking, tool calls, and final response from transcript."""
         self.active_editors[chat_id] = editor
+        sent_images: Set[str] = set()
         try:
             final_response = ""
             current_status = "🤖 正在处理中..."
@@ -1505,6 +1533,15 @@ class TelegramHandlers:
                     current_status = "🔄 正在处理工具执行结果..."
                     await editor.edit(current_status, parse_mode=None, reply_markup=None)
 
+                    # Auto-detect generated image paths and send to Telegram
+                    out_text = str(event.raw_step.get("content", ""))
+                    img_matches = re.findall(r"(/[\w./-]+\.(?:png|jpg|jpeg|webp|gif))", out_text)
+                    for match in img_matches:
+                        if match not in sent_images and os.path.isfile(match):
+                            sent_images.add(match)
+                            bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
+                            await self._send_image_file(chat_id, match, caption="🎨 <b>Agent 已生成并发送图片</b>", bot=bot)
+
                 elif isinstance(event, TurnCompleteEvent):
                     self.pending_questions.pop(chat_id, None)
                     final_response = event.final_content
@@ -1520,6 +1557,14 @@ class TelegramHandlers:
 
             # Display final agent response
             if final_response:
+                # Auto-detect any markdown images in final response
+                md_img_matches = re.findall(r"!\[(.*?)\]\((/[^\)]+\.(?:png|jpg|jpeg|webp|gif))\)", final_response)
+                for caption, path in md_img_matches:
+                    if path not in sent_images and os.path.isfile(path):
+                        sent_images.add(path)
+                        bot = getattr(self, "bot", None) or (editor.message.get_bot() if editor and editor.message else None)
+                        await self._send_image_file(chat_id, path, caption=caption or None, bot=bot)
+
                 chunks = split_message(final_response, max_length=4000)
                 # First chunk edits the status message
                 success = await editor.edit(chunks[0], force=True)
